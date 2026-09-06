@@ -41,6 +41,7 @@ tools:
 - **Security**: IP filtering, expiration dates, minimal permissions
 - **Rotation**: Every 6-12 months or after team changes
 - **Code Mode MCP**: `.agents/tools/mcp/cloudflare-code-mode.md` (operations via 2,500+ endpoints)
+- **Crawler policy default**: Prefer allowing crawlers unless the user or site policy explicitly requires blocking; preserve search discovery by keeping mixed-purpose crawlers allowed
 
 <!-- AI-CONTEXT-END -->
 
@@ -152,6 +153,35 @@ Success returns `"success": true` with your zone list.
 ```
 
 Use cases: automated DNS for dev environments, dynamic subdomains for feature branches, SSL automation, traffic routing for A/B testing, security rule management for dev APIs.
+
+## AI Crawler Policy
+
+Cloudflare exposes the zone-level AI crawler control through Bot Management:
+
+- Read: `GET /zones/{zone_id}/bot_management`
+- Update: `PUT /zones/{zone_id}/bot_management`
+- Field: `ai_bots_protection`
+- Values: `disabled` (allow), `block`, or `only_on_ad_pages`
+- Token permissions: `Bot Management Read` for audits and `Bot Management Write` for changes
+
+Default to `disabled` so AI training crawlers and mixed-purpose crawlers used for
+search indexing remain allowed. Only select a blocking value when the user or an
+explicit site policy requires it. Do not infer crawler policy from Bot Fight Mode,
+robots.txt, or the legacy zone-settings API; read Bot Management directly.
+
+For a portfolio audit, enumerate every accessible zone with pagination, exclude
+non-active zones from mutation, read each active zone's Bot Management object, and
+compare `ai_bots_protection` with `disabled`. Update only non-compliant active zones,
+then re-read every active zone and report totals for compliant, changed, skipped,
+and failed zones. Never report success from the update response alone.
+
+Cloudflare may show a migration-specific dashboard preference for mixed-purpose
+crawlers separately from the older “Block AI bots” selector. The public Bot
+Management schema is the authoritative automation contract; do not guess an
+undocumented field from dashboard wording. If the public API does not expose the
+separate migration preference, inspect an authorized dashboard network request or
+use Cloudflare Code Mode OpenAPI search, then document the verified field before
+automating it.
 
 ## If a Token Is Compromised
 
