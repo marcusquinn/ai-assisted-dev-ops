@@ -590,8 +590,14 @@ _worktree_recovery_plan_claim_state() {
 
 	archive_path=$(printf '%s\n' "$identity_json" | jq -r '.archive_path') || return 1
 	branch=$(printf '%s\n' "$identity_json" | jq -r '.branch') || return 1
+	# Detached archives have no branch-keyed claim. Do not invent a live owner
+	# or report clear evidence: the classifier still protects detached identity.
+	if [[ "$branch" == "detached" ]]; then
+		printf '%s\n' 'not-applicable'
+		return 0
+	fi
 	[[ "$branch" == refs/heads/* ]] || {
-		printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_ACTIVE"
+		printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE"
 		return 0
 	}
 	if ! _worktree_recovery_plan_repo_slug "$archive_path" >/dev/null; then

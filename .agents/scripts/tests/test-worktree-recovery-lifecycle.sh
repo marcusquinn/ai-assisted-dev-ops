@@ -456,6 +456,31 @@ test_claim_state_uses_archive_repository() {
 	return 0
 }
 
+test_detached_claim_does_not_invent_active_owner() {
+	local identity='' claim='' evidence='' result=''
+	local branch='' rc=0
+	identity='{"archive_path":"/unused-fixture","source_removal_outcome":"removed","branch":"detached"}'
+	claim=$(_worktree_recovery_plan_claim_state "$identity") || rc=1
+	[[ "$claim" == 'not-applicable' ]] || rc=1
+	evidence=$(_worktree_recovery_plan_partial_evidence_json clear clear clear "$claim") || rc=1
+	result=$(_worktree_recovery_plan_classification_json "$identity" "$evidence" true) || rc=1
+	[[ "$(printf '%s\n' "$result" | jq -r '.disposition')" == protected ]] || rc=1
+	[[ "$(printf '%s\n' "$result" | jq -r '.reasons[0]')" == detached-or-unresolved-branch ]] || rc=1
+	# Even a hypothetical all-clear claim cannot turn detached identity into a
+	# deletion candidate. Exact commit/task evidence never overrides this gate.
+	evidence='{"git":"clear","worktree":"clear","registry":"clear","claim":"clear","process":"clear","external":{"commit":"merged","open_pr":"clear","task":"closed"}}'
+	result=$(_worktree_recovery_plan_classification_json "$identity" "$evidence" true) || rc=1
+	[[ "$(printf '%s\n' "$result" | jq -r '.disposition')" == protected ]] || rc=1
+	for branch in '' unknown refs/tags/v1; do
+		identity=$(jq -cn --arg branch "$branch" '{archive_path:"/unused-fixture",branch:$branch}') || rc=1
+		claim=$(_worktree_recovery_plan_claim_state "$identity") || rc=1
+		[[ "$claim" == "$WORKTREE_RECOVERY_UNAVAILABLE" ]] || rc=1
+	done
+	print_result "detached_claim_does_not_invent_active_owner" "$rc" \
+		"Expected truthful detached claim evidence while retaining deletion protection and unknown-identity failure"
+	return 0
+}
+
 test_plan_output_refuses_unsafe_targets() {
 	local existing_path="${TEST_DIR}/existing-plan.json"
 	local symlink_path="${TEST_DIR}/symlink-plan.json"
@@ -2405,6 +2430,7 @@ run_all_tests() {
 	test_archive_prunes_only_regenerable_ignored_caches
 	test_archive_pruning_preserves_tracked_codegraph_root
 	test_claim_state_uses_archive_repository
+	test_detached_claim_does_not_invent_active_owner
 	test_recovery_issue_attribution_uses_archived_source_path
 	test_unlinked_merged_pr_is_terminal_task_evidence
 	test_dirty_recovery_short_circuits_expensive_probes
