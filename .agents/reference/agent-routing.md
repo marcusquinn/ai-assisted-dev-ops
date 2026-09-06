@@ -45,6 +45,64 @@ The selected agent changes the system prompt and domain knowledge loaded for the
 - Persist completed-unit evidence and reuse it after retries or runtime interruption. The primary repeats delegated exploration only when its evidence is absent, stale, or contradictory.
 - Consolidate adversarial review into bounded correctness/concurrency, security/trust, compatibility/quality, and test-adequacy units, followed by one synthesis and one repair pass.
 
+### Focused domain delegation (OpenCode native Task)
+
+`domain-focused` and `domain-light` are two bounded execution roles, not another
+registry of domain prompts. Build+ remains the normal systems/development parent.
+Use these roles for independent advisory inference over **supplied** evidence:
+neither has tools, network access, mutation authority, recursion, or automatic
+capability escalation. The parent retains task ownership and validates the result.
+
+Pass a JSON envelope as the Task prompt (an optional leading effort marker is
+accepted). For example, Build+ can independently ask `domain-focused` to analyse
+supplied campaign evidence, then use `domain-light` for a narrower arithmetic check:
+
+```json
+{
+  "task": "campaign-rate-review",
+  "objective": "Compare the supplied conversion rates without causal claims",
+  "scope": "Only these two observations; no campaign changes",
+  "source": "marketing-sales.md",
+  "decisions": "No publishing, spending, discovery or claims of significance",
+  "evidence": "A: 20 conversions / 1000 visits. B: 30 / 1000 visits.",
+  "output": "Return task ID, rates with evidence citations, uncertainty and next action",
+  "tools": [],
+  "authority": "inference-only",
+  "effort": "standard"
+}
+```
+
+For the light task, narrow the objective to arithmetic and select `effort: simple`.
+Expected parent-verifiable evidence is 2% versus 3%, a 1 percentage-point difference;
+these counts alone do not establish causality. Host completion is not acceptance.
+Return missing evidence/capability as unavailable and cancellation as cancelled.
+
+Canonical identity reuses the t18405 primary-delivery contract: only a configured
+primary whose resolved prompt equals its canonical source is eligible. The focused
+role receives that source's body; the light role receives its authored
+`AI-CONTEXT-START` section only. Both retain the framework core and child authority
+contract. Source hashes are rechecked at dispatch, leaf pointers are not followed,
+and no parent transcript or repo content is loaded automatically. Supply any
+essential decisions or additional domain evidence in the envelope; if a required
+section is absent, use the focused role rather than claiming the light role read it.
+
+The exact parent model is inherited. Focused reasoning is capped at medium (low for
+simple requests), light reasoning at low, and both are clamped to the observed
+parent variant. Unknown parent model/variant, changed model, missing source, source
+drift or malformed envelope fails closed. These are reasoning ceilings, not claims
+of exact token/cost caps. No provider fallback or escalation can enlarge the bound.
+Cancellation and cleanup stay with the existing native Task owner; no new process,
+MCP connection, or external resource is created by profile generation.
+
+Only the OpenCode plugin config/native Task chat adapter changes. Generated
+OpenCode primary files, Claude Code discovery, Codex and headless launch adapters
+are unchanged; unsupported runtimes retain the existing `research-only`/inference
+delegation path with explicitly supplied canonical sources. Do not assume these
+two names are available there. Registration is additive and idempotent, preserves
+user-owned name collisions, and stores source identities per plugin instance, not
+in a global repository cache. Disable either generated profile with a user-owned
+`disable: true` override; restart OpenCode after changing configuration.
+
 ### Improve efficiency during ordinary work
 
 Optimise verified completion per allowance window and human attention, not minimum

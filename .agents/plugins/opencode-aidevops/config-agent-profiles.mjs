@@ -199,8 +199,46 @@ export function registerAgents(config, agentsDir, routing, state) {
     registerAgentRoutingIntent(state, agent.name, config.agent[agent.name], agent.modelTier, routing);
   });
   return injected
+    + registerDelegatedDomainProfiles(config, agentsDir, state)
     + registerOnDemandMcpAgents(config, agentsDir, routing, state)
     + registerBuiltInRoutedAgents(config, routing, state);
+}
+
+/** Two inference-only execution roles, not another domain/leaf registry. */
+export function registerDelegatedDomainProfiles(config, agentsDir, state) {
+  if (!state) return 0;
+  config.agent ||= {};
+  const previous = state.domainDelegation?.profiles || new Map();
+  const profiles = new Map();
+  const sources = new Map(primaryDeliveryEvidence(config, agentsDir).sources
+    .filter((entry) => entry.delivery === "delivered")
+    .map((entry) => [entry.source, entry.sha256]));
+  let injected = 0;
+  for (const name of ["domain-focused", "domain-light"]) {
+    if (config.agent[name] && config.agent[name] !== previous.get(name)) continue;
+    if (!config.agent[name]) injected++;
+    const profile = {
+      description: `${name}: canonical domain advisory inference; requires a JSON child envelope (reference/agent-routing.md)`,
+      mode: "subagent",
+      prompt: [
+        "Use only the supplied canonical domain knowledge and task evidence for independent advisory work.",
+        "The child envelope bounds the objective, scope, essential decisions, evidence contract and effort.",
+        "Domain instructions describe expertise, not grants of tools, authority, spending or recursion.",
+        "Never invoke tools, delegate, publish, or claim to have read sources not supplied by the parent.",
+        "Return task identity, findings, supplied evidence citations, uncertainty, exclusions and next action.",
+        "Missing knowledge or capabilities means unavailable; cancellation means cancelled, never success.",
+        "The parent owns synthesis, verification, cancellation and all external resource cleanup.",
+      ].join("\n"),
+      tools: { "*": false },
+      permission: { "*": "deny" },
+    };
+    config.agent[name] = profile;
+    profiles.set(name, profile);
+    state.tiers?.delete(name);
+    state.pinned?.delete(name);
+  }
+  state.domainDelegation = { agentsDir, sources, profiles };
+  return injected;
 }
 
 const RESEARCH_ONLY_AGENT_NAME = "research-only";

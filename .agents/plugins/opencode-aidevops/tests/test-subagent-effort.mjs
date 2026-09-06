@@ -3,6 +3,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerDelegatedDomainProfiles } from "../config-agent-profiles.mjs";
+import { loadDelegatedDomainKnowledge } from "../agent-loader.mjs";
 
 import {
   clampReasoningVariant,
@@ -22,6 +27,107 @@ const TIER_REASONING = {
   standard: { openai: "max" },
   thinking: { openai: "xhigh" },
 };
+
+function domainFixture(t, variant = "low") {
+  const root = mkdtempSync(join(process.env.AIDEVOPS_TEMP_DIR || tmpdir(), "domain-profile-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = readFileSync(new URL("../../../marketing-sales.md", import.meta.url), "utf8").trim();
+  writeFileSync(join(root, "marketing-sales.md"), source);
+  const config = { agent: { "Marketing-Sales": {
+    mode: "primary", description: "Read ~/.aidevops/agents/marketing-sales.md", prompt: source,
+  } } };
+  const state = { tiers: new Map(), pinned: new Set() };
+  assert.equal(registerDelegatedDomainProfiles(config, root, state), 2);
+  const outcomes = [];
+  const client = { session: {
+    get: async ({ path }) => ({ data: path.id === "parent"
+      ? { model: { providerID: "openai", modelID: "parent" }, variant }
+      : { id: path.id, parentID: "parent" } }),
+    messages: async () => ({ data: [] }),
+  } };
+  const hooks = createSubagentEffortHooks(client, {
+    agentRoutingState: state, onSubagentOutcome: (value) => outcomes.push(value),
+  });
+  const envelope = {
+    task: "campaign-analysis", objective: "Compare supplied conversion rates", scope: "Advisory arithmetic only",
+    source: "marketing-sales.md", decisions: "No publishing or causal claims",
+    evidence: "A: 20/1000 conversions; B: 30/1000 conversions", output: "Rates, uncertainty, next action",
+    tools: [], authority: "inference-only", effort: "standard",
+  };
+  const output = (name = "domain-focused", changes = {}) => ({
+    message: { sessionID: "child", agent: name },
+    parts: [{ type: "text", text: JSON.stringify({ ...envelope, ...changes }) }],
+  });
+  return { root, config, state, hooks, output, outcomes };
+}
+
+test("focused and light domain captures deliver canonical knowledge with parent ceilings", async (t) => {
+  const fixture = domainFixture(t);
+  for (const name of ["domain-focused", "domain-light"]) {
+    const output = fixture.output(name);
+    await fixture.hooks.chatMessage({}, output);
+    const capture = output.parts[0].text;
+    assert.match(capture, /campaign-analysis/);
+    assert.match(capture, /SHA256: [a-f0-9]{64}/);
+    assert.match(capture, /20\/1000 conversions/);
+    const expected = loadDelegatedDomainKnowledge(fixture.state.domainDelegation, "marketing-sales.md", name === "domain-light");
+    assert.ok(capture.endsWith(expected.knowledge));
+    assert.deepEqual(output.message.model, { providerID: "openai", modelID: "parent" });
+    await fixture.hooks.chatMessage({}, output);
+    assert.equal(output.parts[0].text, capture);
+    const params = { options: { reasoning_effort: "max" } };
+    await fixture.hooks.chatParams({ message: output.message, model: output.message.model }, params);
+    assert.deepEqual(params.options, { reasoning_effort: "low", reasoningEffort: "low" });
+    assert.deepEqual(fixture.config.agent[name].tools, { "*": false });
+    assert.deepEqual(fixture.config.agent[name].permission, { "*": "deny" });
+  }
+  const full = loadDelegatedDomainKnowledge(fixture.state.domainDelegation, "marketing-sales.md");
+  const light = loadDelegatedDomainKnowledge(fixture.state.domainDelegation, "marketing-sales.md", true);
+  assert.ok(full.knowledge.length > light.knowledge.length);
+  assert.equal(registerDelegatedDomainProfiles(fixture.config, fixture.root, fixture.state), 0);
+  assert.equal(Object.keys(fixture.config.agent).length, 3);
+});
+
+test("domain registration preserves user profiles and isolates canonical source registries", (t) => {
+  const fixture = domainFixture(t);
+  const custom = { prompt: "User-owned", disable: true };
+  fixture.config.agent["domain-light"] = custom;
+  registerDelegatedDomainProfiles(fixture.config, fixture.root, fixture.state);
+  assert.equal(fixture.config.agent["domain-light"], custom);
+  assert.equal(fixture.state.domainDelegation.profiles.has("domain-light"), false);
+  const other = { tiers: new Map(), pinned: new Set() };
+  registerDelegatedDomainProfiles({ agent: {} }, fixture.root, other);
+  assert.equal(other.domainDelegation.sources.size, 0);
+  assert.equal(fixture.state.domainDelegation.sources.size, 1);
+});
+
+test("domain delegation rejects missing authority, unsafe paths, drift and unknown parent effort", async (t) => {
+  const fixture = domainFixture(t);
+  for (const changes of [{ tools: ["bash"] }, { authority: "publish" }, { effort: "thinking" },
+    { objective: "" }, { source: "../marketing-sales.md" }, { source: "unknown.md" }]) {
+    await assert.rejects(fixture.hooks.chatMessage({}, fixture.output("domain-focused", changes)));
+  }
+  writeFileSync(join(fixture.root, "marketing-sales.md"), "changed source");
+  await assert.rejects(fixture.hooks.chatMessage({}, fixture.output()), /source changed/);
+  const unknown = domainFixture(t, "");
+  await assert.rejects(unknown.hooks.chatMessage({}, unknown.output()), /ceiling unavailable/);
+});
+
+test("cancelled domain children retain host ownership and never report acceptance", async (t) => {
+  const fixture = domainFixture(t);
+  await fixture.hooks.chatMessage({}, fixture.output());
+  fixture.hooks.beforeTool({ tool: "task", callID: "call", sessionID: "parent" }, {});
+  fixture.hooks.handleEvent({ event: { type: "session.created", properties: {
+    info: { id: "child", parentID: "parent" },
+  } } });
+  await fixture.hooks.afterTool({ tool: "task", callID: "call", sessionID: "parent" }, {
+    metadata: { sessionId: "child", status: "cancelled" }, output: "cancelled",
+  });
+  const outcome = fixture.outcomes.find((entry) => entry.stage === "host_outcome");
+  assert.equal(outcome.parentSessionID, "parent");
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.status, "cancelled");
+});
 
 test("aggregate Task session metadata falls back without coercing child identity", () => {
   const lifecycle = new SubagentLifecycleTracker();

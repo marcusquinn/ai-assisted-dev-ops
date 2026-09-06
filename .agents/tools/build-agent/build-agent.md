@@ -37,6 +37,12 @@ mode: subagent
 | **Location** | Root of `.agents/` | `tools/`, `services/`, `workflows/` |
 | **MCP tools** | NEVER enable directly | Enable per-agent |
 
+Execution role does not limit useful domain knowledge. For a bounded primary-domain
+child or lighter canonical subset, use `reference/agent-routing.md` "Focused domain
+delegation". Derive knowledge from the verified canonical source, not a hand-written
+parallel prompt. Keep the child's tools, authority, effort and resource ownership
+inside the parent envelope; source readiness never grants permission.
+
 ## Subagent YAML Frontmatter (Required — omitting defaults to read-only)
 
 ```yaml

@@ -1,4 +1,5 @@
-import { existsSync, readdirSync } from "fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "fs";
+import { createHash } from "node:crypto";
 import { join } from "path";
 
 // Re-export MCP tool permissions (extracted to reduce file complexity)
@@ -195,3 +196,23 @@ export function loadAgentIndex(agentsDir, readIfExists) {
   return agents;
 }
 
+/** Load one verified primary, never follow leaf pointers or repository paths. */
+export function loadDelegatedDomainKnowledge(registry, source, light = false) {
+  const expected = registry?.sources?.get(source);
+  if (!expected || !/^[a-z0-9-]+\.md$/.test(source)) {
+    throw new Error("[aidevops] Domain source unavailable or unverified");
+  }
+  const root = realpathSync(registry.agentsDir);
+  const path = join(root, source);
+  if (realpathSync(path) !== path) throw new Error("[aidevops] Domain source must be canonical");
+  const text = readFileSync(path, "utf8").trim();
+  if (createHash("sha256").update(text).digest("hex") !== expected) {
+    throw new Error("[aidevops] Domain source changed; reload profiles before delegation");
+  }
+  const body = text.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+  const knowledge = light
+    ? body.match(/<!-- AI-CONTEXT-START -->([\s\S]*?)<!-- AI-CONTEXT-END -->/)?.[1]?.trim()
+    : body;
+  if (!knowledge) throw new Error("[aidevops] Required domain knowledge unavailable");
+  return { source, sha256: expected, knowledge };
+}

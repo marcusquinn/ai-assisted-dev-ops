@@ -9,6 +9,51 @@ import {
   nextRoutingTier,
   selectConnectedRoutingCandidate,
 } from "./model-routing.mjs";
+import { loadDelegatedDomainKnowledge } from "./agent-loader.mjs";
+
+const DOMAIN_KNOWLEDGE_MARKER = "\n\n[AIDEvOps canonical domain knowledge]";
+const DOMAIN_REQUIRED_FIELDS = ["task", "objective", "scope", "source", "decisions", "evidence", "output"];
+
+function domainEnvelope(text) {
+  let envelope;
+  try {
+    envelope = JSON.parse(text.split(DOMAIN_KNOWLEDGE_MARKER)[0]
+      .replace(/^\[effort:(simple|standard|thinking)\]\s*/i, ""));
+  } catch {
+    throw new Error("[aidevops] Domain delegation requires a JSON child envelope");
+  }
+  if (!envelope || DOMAIN_REQUIRED_FIELDS.some((key) => typeof envelope[key] !== "string" || !envelope[key].trim())
+    || !["simple", "standard"].includes(envelope.effort)
+    || envelope.authority !== "inference-only"
+    || !Array.isArray(envelope.tools) || envelope.tools.length !== 0) {
+    throw new Error("[aidevops] Invalid domain envelope: bounded evidence, effort and inference-only authority required");
+  }
+  return envelope;
+}
+
+async function routeDomainMessage(context, output, registry, agentName) {
+  const envelope = domainEnvelope(context.messageText(output.parts));
+  const child = await loadChildSessionWithParent(context, output.message.sessionID);
+  if (!child) throw new Error("[aidevops] Domain delegation requires an observed parent session");
+  const parent = await context.getParentRoute(context.client, child);
+  if (!parent.model || !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(parent.variant)) {
+    throw new Error("[aidevops] Parent model/effort ceiling unavailable; domain delegation refused");
+  }
+  const light = agentName === "domain-light";
+  const delivered = loadDelegatedDomainKnowledge(registry, envelope.source, light);
+  const effort = light ? "simple" : envelope.effort;
+  // Keep the exact parent model: cross-model effort names are not compute ceilings.
+  output.message.model = routingModelIdentity(parent.model);
+  const variant = context.clampReasoningVariant(effort === "simple" ? "low" : "medium", parent.variant);
+  context.policies.set(output.message.sessionID, {
+    effort, reason: "bounded_domain", pinned: true, attempt: 1, createdAt: Date.now(),
+    parentSessionID: child.parentID, routedModel: parent.model, domainVariant: variant,
+  });
+  const target = output.parts.find((part) => part.type === "text");
+  target.text = `${JSON.stringify(envelope)}${DOMAIN_KNOWLEDGE_MARKER}\nSource: ${delivered.source}\nSHA256: ${delivered.sha256}\n${delivered.knowledge}`;
+  // No second transcript or duplicated canonical payload on repeated transformation.
+  output.parts = output.parts.filter((part) => part.type !== "text" || part === target);
+}
 
 async function loadChildSessionWithParent(context, sessionID) {
   try {
@@ -57,6 +102,11 @@ async function routeChatMessage(context, output) {
 
   const text = context.messageText(output.parts);
   const agentName = String(message.agent ?? message.mode ?? "");
+  const domainRegistry = context.agentRoutingState?.domainDelegation;
+  if (domainRegistry?.profiles?.has(agentName)) {
+    await routeDomainMessage(context, output, domainRegistry, agentName);
+    return;
+  }
   const route = context.routedPolicy(context.agentRoutingState, agentName, text);
   const policy = {
     effort: route.effort,
@@ -165,6 +215,17 @@ async function recordChildRouting(context, {
 async function routeChatParams(context, input, output) {
   const sessionID = input?.message?.sessionID;
   if (!sessionID) return;
+
+  const domainPolicy = context.policies.get(sessionID);
+  const domainName = input?.message?.agent;
+  if (domainPolicy?.reason === "bounded_domain"
+    || context.agentRoutingState?.domainDelegation?.profiles?.has(domainName)) {
+    if (!domainPolicy?.domainVariant || childModelFrom(context, input) !== domainPolicy.routedModel) {
+      throw new Error("[aidevops] Domain parent ceiling unavailable or model changed");
+    }
+    applyRequestedVariant(output, domainPolicy.domainVariant, domainPolicy.domainVariant);
+    return;
+  }
 
   try {
     const childSession = await context.getSession(context.client, sessionID);
