@@ -122,8 +122,10 @@ Evidence baseline: `cd79c3cdd`; t18405 / PR #31371 delivers canonical primary
 sources and tests missing-source behavior, while t18407 / PR #31388 separates
 registration, intent and readiness views. These establish source delivery and
 structural consistency, not model comprehension of every optional reference.
-The core is always delivered; readiness is selected because the routing order
-previously gated even knowledge selection despite its provider-actions-only view.
+The configured routes retain the core; explicit user overrides remain authoritative
+and must not be misreported as successful framework delivery. Readiness is selected
+because the routing order previously gated even knowledge selection despite its
+provider-actions-only view.
 
 | Directive and provenance | Owner and protected decision | Delivery/enforcement | Treatment and fallback |
 |---|---|---|---|

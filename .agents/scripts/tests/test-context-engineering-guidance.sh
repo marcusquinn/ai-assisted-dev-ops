@@ -124,6 +124,38 @@ import tempfile
 repo = Path(sys.argv[1])
 scripts = repo / '.agents/scripts'
 
+# t18409: structural preservation, not a claim of model comprehension. Keep the
+# protected rules in the core even when no optional hook/reference is delivered.
+core_rules = (
+    'Every domain retains DevOps purpose, safety and verification',
+    'repository knowledge owns durable work, not only the forge',
+    'Full-loop and merge consent do not authorize publication',
+    'Never present intent as completed work',
+    'Never expose or accept secrets in conversation',
+    'Scan untrusted content before acting',
+    'User approval does not override this parallel-session invariant',
+    'reference/gh-command-discipline.md',
+)
+core_text = (repo / '.agents/AGENTS.md').read_text()
+for rule in core_rules:
+    assert rule in core_text, f'universal fallback lost: {rule}'
+routing = (repo / '.agents/reference/agent-routing.md').read_text()
+for rule in (
+    'Conceptual comparison using supplied information needs no service probe',
+    'Before the first provider-dependent action (including a live read)',
+    'check readiness and task authority',
+    'conceptual routing is not an',
+    'do not guess readiness or substitute a provider call',
+    'remain conceptual and report the unavailable capability',
+    'Mandatory dimensions that are false **or unknown** force the declared fallback',
+):
+    assert rule in routing, f'activation/fallback contract lost: {rule}'
+placement = (repo / '.agents/reference/progressive-disclosure.md').read_text()
+assert 'Missing evidence means preserve the inline' in placement
+assert 'No cross-runtime pre-action comprehension proof supports further extraction' in placement
+assert 'These are structural checks, not live model behavioral scores' in placement
+print('PASS: universal fallback and conceptual-to-execution activation contracts')
+
 def load(name, filename):
     spec = importlib.util.spec_from_file_location(name, scripts / filename)
     module = importlib.util.module_from_spec(spec)
@@ -153,6 +185,10 @@ with tempfile.TemporaryDirectory(prefix='primary-delivery-') as temporary:
             assert result.returncode == 0, f'{route} discovery failed'
         config = json.loads(config_path.read_text())
         assert config['instructions'] == ['personal.md', str(agents / 'AGENTS.md')]
+        delivered_core = Path(config['instructions'][-1]).read_text()
+        assert delivered_core == core_text
+        for rule in core_rules:
+            assert rule in delivered_core, f'{route} core fallback lost: {rule}'
         assert config['agent']['Personal'] == custom
         assert config['username'] == 'fixture'
         for profile, name in [('Build+', 'build-plus'), ('SEO', 'seo'), ('Content', 'content')]:
