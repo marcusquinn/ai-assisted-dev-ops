@@ -20,6 +20,39 @@ PULSE_FEEDBACK_ROUTE_WORKER_TAKEOVER_LABEL="origin:worker-takeover"
 _PULSE_FEEDBACK_ROUTE_CONTEXT_KIND=""
 _PULSE_FEEDBACK_ROUTE_CONTEXT_HEAD=""
 
+# Re-read ownership at each destructive boundary, independently of the PR's
+# original worker provenance. A preserved worker PR can have a live interactive
+# repair owner on this runner or another runner (GH#31305).
+_feedback_route_owner_allows() {
+	local linked_issue="$1"
+	local repo_slug="$2"
+	local metadata="" comments=""
+	if ! declare -F _interactive_claim_fence_blocks_dispatch >/dev/null 2>&1; then
+		# shellcheck source=interactive-claim-fence.sh
+		source "${BASH_SOURCE[0]%/*}/interactive-claim-fence.sh"
+	fi
+	if _interactive_claim_fence_blocks_dispatch "$linked_issue" "$repo_slug"; then
+		return 1
+	fi
+	metadata=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null) || return 1
+	comments=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" --paginate --slurp 2>/dev/null) || return 1
+	#aidevops:trust-boundary — a forged claim comment cannot fence another owner.
+	# Match trusted comment authors to current assignees, not text attribution.
+	jq -en --argjson issue "$metadata" --argjson pages "$comments" '
+		($issue.assignees | map(.login)) as $owners |
+		($pages | if (.[0]? | type) == "array" then add else . end) as $comments |
+		($issue.state == "open") and
+		([$comments[]?
+		 | select(.author_association as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a))
+		 | select(.user.login as $u | $owners | index($u))
+		 | select(.user.login as $u | (.body // "") | contains("Interactive session claimed by @" + $u))
+		 | select(($issue.labels | map(.name) | index("status:in-review")) != null)
+		 | select((.created_at | fromdateiso8601) as $at | now - $at >= 0 and now - $at < 7200)
+		] | length == 0)
+	' >/dev/null 2>&1
+	return $?
+}
+
 _feedback_route_gh_write() {
 	if declare -F _gh_with_timeout >/dev/null 2>&1; then
 		_gh_with_timeout write gh "$@"
@@ -584,6 +617,7 @@ _feedback_route_transition_and_verify() {
 	local expected_head="${7:-}"
 	local companion_source_label="${8:-}"
 
+	_feedback_route_owner_allows "$linked_issue" "$repo_slug" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 	if [[ "$clear_hold" == "1" ]]; then
 		[[ "$pr_number" =~ ^[0-9]+$ && -n "$kind" && -n "$expected_head" ]] || return 1
 		if ! _feedback_route_automation_hold_exists "$kind" "$pr_number" "$repo_slug" \
@@ -894,6 +928,7 @@ _feedback_route_close_and_finish() {
 				return $?
 			fi
 		fi
+		_feedback_route_owner_allows "$linked_issue" "$repo_slug" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 		_feedback_route_gh_write pr close "$pr_number" --repo "$repo_slug" \
 			--comment "${close_comment}
 
