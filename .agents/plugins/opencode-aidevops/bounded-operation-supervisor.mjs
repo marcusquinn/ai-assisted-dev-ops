@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Marcus Quinn
 
 import { spawn, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 function boundedInteger(value, fallback, minimum, maximum) {
   value = Number(value);
@@ -38,61 +39,69 @@ function groupMemberCount(groupID) {
   return count;
 }
 
-const config = await readPrivateConfig();
-const command = config?.command;
-if (!Array.isArray(command) || command.length === 0
-  || command.some((part) => typeof part !== "string" || !part)) process.exit(125);
+export async function runSupervisor() {
+  const config = await readPrivateConfig();
+  const command = config?.command;
+  if (!Array.isArray(command) || command.length === 0
+    || command.some((part) => typeof part !== "string" || !part)) return 125;
 
-const budgetMs = boundedInteger(config.budgetMs, 15 * 60 * 1000, 10, 24 * 60 * 60 * 1000);
-const killGraceMs = boundedInteger(config.killGraceMs, 500, 10, 30 * 1000);
-let terminating = false;
-let childFinished = false;
-let childExit = 1;
+  const budgetMs = boundedInteger(config.budgetMs, 15 * 60 * 1000, 10, 24 * 60 * 60 * 1000);
+  const killGraceMs = boundedInteger(config.killGraceMs, 500, 10, 30 * 1000);
+  let terminating = false;
+  let childFinished = false;
+  let childExit = 1;
 
-function terminateOwnedGroup() {
-  if (terminating) return;
-  terminating = true;
-  try {
-    process.kill(-process.pid, "SIGTERM");
-  } catch {
-    // The group may already contain only this supervisor.
-  }
-  setTimeout(() => {
+  const terminateOwnedGroup = () => {
+    if (terminating) return;
+    terminating = true;
     try {
-      process.kill(-process.pid, "SIGKILL");
+      process.kill(-process.pid, "SIGTERM");
     } catch {
-      process.exit(1);
+      // The group may already contain only this supervisor.
     }
-  }, killGraceMs).unref();
+    setTimeout(() => {
+      try {
+        process.kill(-process.pid, "SIGKILL");
+      } catch {
+        process.exit(1);
+      }
+    }, killGraceMs).unref();
+  };
+
+  process.on("SIGTERM", terminateOwnedGroup);
+  process.on("SIGINT", terminateOwnedGroup);
+  process.on("message", (message) => {
+    if (message?.action === "terminate") terminateOwnedGroup();
+  });
+  const budgetTimer = setTimeout(terminateOwnedGroup, budgetMs);
+
+  const child = spawn(command[0], command.slice(1), {
+    cwd: process.cwd(),
+    env: { ...process.env, AIDEVOPS_OPERATION_ID: String(config.operationID || "") },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  child.once("error", () => {
+    childFinished = true;
+    childExit = 127;
+  });
+  child.once("exit", (code) => {
+    childFinished = true;
+    childExit = Number.isInteger(code) ? code : 1;
+  });
+
+  return new Promise((resolve) => {
+    const drainTimer = setInterval(() => {
+      if (!childFinished) return;
+      const members = groupMemberCount(process.pid);
+      if (members !== 1) return;
+      clearInterval(drainTimer);
+      clearTimeout(budgetTimer);
+      resolve(childExit);
+    }, 25);
+  });
 }
 
-process.on("SIGTERM", terminateOwnedGroup);
-process.on("SIGINT", terminateOwnedGroup);
-process.on("message", (message) => {
-  if (message?.action === "terminate") terminateOwnedGroup();
-});
-const budgetTimer = setTimeout(terminateOwnedGroup, budgetMs);
-
-const child = spawn(command[0], command.slice(1), {
-  cwd: process.cwd(),
-  env: { ...process.env, AIDEVOPS_OPERATION_ID: String(config.operationID || "") },
-  stdio: ["ignore", "inherit", "inherit"],
-});
-
-child.once("error", () => {
-  childFinished = true;
-  childExit = 127;
-});
-child.once("exit", (code) => {
-  childFinished = true;
-  childExit = Number.isInteger(code) ? code : 1;
-});
-
-const drainTimer = setInterval(() => {
-  if (!childFinished) return;
-  const members = groupMemberCount(process.pid);
-  if (members !== 1) return;
-  clearInterval(drainTimer);
-  clearTimeout(budgetTimer);
-  process.exit(childExit);
-}, 25);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exit(await runSupervisor());
+}
