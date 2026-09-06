@@ -58,7 +58,7 @@ else:
     print("  Disabled default 'build' and 'plan' agents")
     print("  Disabled 'Plan+', 'AI-DevOps', 'Browser-Extension-Dev', 'Mobile-App-Dev' (available as @subagents)")
 
-    config['agent'] = sorted_agents
+    config['agent'] = {**config.get('agent', {}), **sorted_agents}
 
     # Set Build+ as the default agent (first in Tab cycle, auto-selected on startup)
     config['default_agent'] = "Build+"
@@ -69,7 +69,12 @@ else:
 # =============================================================================
 instructions_path = os.path.expanduser("~/.aidevops/agents/AGENTS.md")
 if os.path.exists(instructions_path):
-    config['instructions'] = [instructions_path]
+    existing = config.get('instructions', [])
+    if not isinstance(existing, list):
+        existing = [existing] if existing else []
+    if instructions_path not in existing:
+        existing.append(instructions_path)
+    config['instructions'] = existing
     print("  Added instructions: ~/.aidevops/agents/AGENTS.md (auto-loaded every session)")
 else:
     print("  Warning: ~/.aidevops/agents/AGENTS.md not found - run setup.sh first")
@@ -82,7 +87,7 @@ if subagent_filtered_count > 0:
 # Count agents with custom prompts
 prompt_count = sum(1 for name, cfg in sorted_agents.items() if "prompt" in cfg)
 if prompt_count > 0:
-    print(f"  Custom system prompts: {prompt_count} agents use prompts/build.txt")
+    print(f"  Canonical source prompts: {prompt_count} primary agents")
 
 # Count agents with model routing
 model_count = sum(1 for name, cfg in sorted_agents.items() if "model" in cfg)

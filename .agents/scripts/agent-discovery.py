@@ -46,7 +46,7 @@ def _update_opencode_agents(config, sorted_agents_local, primary_agents_local):
         print("  (agents directory may be empty or deploy incomplete)", file=sys.stderr)
         return
     apply_disabled_agents(sorted_agents_local)
-    config['agent'] = sorted_agents_local
+    config['agent'] = {**config.get('agent', {}), **sorted_agents_local}
     config['default_agent'] = "Build+"
 
 
