@@ -7,7 +7,16 @@
 
 Dispatch issue-backed workers with `dispatch-single-issue-helper.sh dispatch NUMBER OWNER/REPO`. It performs deduplication and ownership ceremony, creates the worktree, and forwards the verified runner identity to `headless-runtime-helper.sh`. Use `headless-runtime-helper.sh run` directly only for non-issue headless jobs. Never use bare runtime CLIs: they skip lifecycle reinforcement and can stop after PR creation (GH#5096).
 
-Capability cataloguing is not evidence of live usability. Before routing work that depends on an external tool or service, run `scripts/capability-readiness-helper.py route <capability> --runtime <opencode|claude-code>`. Mandatory dimensions that are false **or unknown** force the declared fallback; the structured response reports the reason and coverage impact. The canonical contract is `configs/capability-registry.json`; generated inventory: `reference/capability-registry.md`.
+Capability cataloguing is not evidence of live usability. Before routing execution that depends on an external tool or service, run `scripts/capability-readiness-helper.py route <capability> --runtime <opencode|claude-code>`. Mandatory dimensions that are false **or unknown** force the declared fallback; the structured response reports the reason and coverage impact. The canonical contract is `configs/capability-registry.json`; generated inventory: `reference/capability-registry.md`.
+
+Conceptual comparison using supplied information needs no service probe. Select
+domain knowledge without claiming installed, authenticated or authorized access.
+Before the first provider-dependent action (including a live read), load the
+owning service instructions and check readiness and task authority. A transition
+from discussion to execution reactivates this gate; conceptual routing is not an
+execution exemption. If the helper, runtime coverage or required evidence is
+unavailable, do not guess readiness or substitute a provider call: use the
+declared fallback, or remain conceptual and report the unavailable capability.
 
 ## View ownership
 
@@ -23,7 +32,7 @@ not depend on a user remembering to request learning or feedback capture.
 
 1. Read the task or issue description.
 2. If it is clearly code work (`implement`, `fix`, `refactor`, `CI`), use Build+ or omit `--agent`.
-3. Resolve a narrow user-intent match through `reference/domain-index.md` before using a broad primary-agent trigger. If it depends on an external tool or service, resolve its capability readiness. Route to the owner only when every mandatory dimension is true; otherwise use the reported fallback.
+3. Resolve a narrow user-intent match through `reference/domain-index.md` before using a broad primary-agent trigger. Select knowledge without service probes for conceptual work; before provider-dependent execution, apply the Core rule readiness gate above. Execute only when every mandatory dimension is true and task authority permits it; otherwise use the reported fallback.
 4. If uncertain, default to Build+; it can load narrower docs on demand.
 5. **Bundle-aware routing (t1364.6):** project bundles can define `agent_routing` overrides. Check with `bundle-helper.sh get agent_routing <repo-path>`. An explicit `--agent` flag wins.
 

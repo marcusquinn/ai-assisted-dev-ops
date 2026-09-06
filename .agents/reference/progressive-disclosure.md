@@ -84,7 +84,7 @@ Self-improvement sessions that ADD to build.txt or AGENTS.md should:
 2. If Layer 2: create or extend a reference file, add a pointer inline.
 3. If deterministic: add/update `.agents/configs/prompt-hook-candidates.conf`, then implement or point at the enforcing hook/check.
 4. If Layer 1: check whether any existing inline content is now superseded (remove it).
-5. Target: `AGENTS.md` + `prompts/build.txt` combined ≤ 30k tokens. Measure before merging.
+5. Preserve the existing CI size ratchet for `AGENTS.md` + `prompts/build.txt`; counts diagnose review pressure, never authorize removing knowledge. Measure before merging, but require delivery evidence rather than a token-reduction claim.
 
 To measure current token load:
 
@@ -100,6 +100,52 @@ for f in files:
     print(f'{chars//4:6d} tokens  {f}')
 "
 ```
+
+## Decision-boundary delivery review (t18409 / GH#31294)
+
+This section owns the placement review, not the domain rules. Apply the Agent
+Review classification/provenance rubric before extracting a directive. Frequency,
+line counts and registry status select candidates; they do not prove safe removal.
+Keep authority, secrets, external-content trust, verified completion, portable
+durable work and DevOps purpose universal across coding and non-coding domains.
+
+For each candidate retain source revision/task provenance, protected failure,
+current enforcement, decision trigger, one owning source, generated views and
+fallback evidence. Introduce the owner and trigger together before extraction.
+An installed hook is not proof it runs on every route; a CI check after a side
+effect is not pre-decision delivery. Missing evidence means preserve the inline
+rule and keep relocation acceptance open, not mark the migration successful.
+
+### Initial bounded selection
+
+Evidence baseline: `cd79c3cdd`; t18405 / PR #31371 delivers canonical primary
+sources and tests missing-source behavior, while t18407 / PR #31388 separates
+registration, intent and readiness views. These establish source delivery and
+structural consistency, not model comprehension of every optional reference.
+The core is always delivered; readiness is selected because the routing order
+previously gated even knowledge selection despite its provider-actions-only view.
+
+| Directive and provenance | Owner and protected decision | Delivery/enforcement | Treatment and fallback |
+|---|---|---|---|
+| Universal purpose, t18403 / PR #31360 | `aidevops/purpose.md`; before treating a domain or forge as a weaker source of responsibility | `AGENTS.md` retains the applicable invariant; native/generated instruction views inherit it, not a copied domain manual | Reinforce inline purpose and repository ownership; retain all existing authority, trust, secret and completion rules. Non-hook runtimes still receive the core. This is not a forge-loss recovery claim. |
+| Registration versus readiness, t18407 / PR #31388 | `reference/agent-routing.md` Core rule; before first provider-dependent action, including a live read | Intent view selects knowledge; capability registry/helper checks execution dimensions, never grants task authority | Clarify conceptual selection without a service probe. On transition to execution, load the service owner before acting; unknown dimensions, missing helper or unsupported coverage take declared fallback or remain conceptual. No global safety rule is removed. |
+| Platform CLI mechanics, t2685 / t2893 / GH#20978 | `reference/gh-command-discipline.md`; before GitHub body writes | Existing core pointer plus wrappers, PATH shim and optional OpenCode quality hook; registry status remains partial | Preserve current core wording. No cross-runtime pre-action comprehension proof supports further extraction; non-hook/older runtimes still need the inline invariant and explicit reference load. |
+
+### Verification and rollback
+
+Use `scripts/tests/test-context-engineering-guidance.sh` for canonical/generated
+delivery and missing-source cases, and `scripts/progressive-load-check.sh --quiet`
+for pointers/registry/size. Record native-loader skips as unavailable evidence.
+These are structural checks, not live model behavioral scores. Do not infer
+successful comprehension or reduced user effort from them.
+
+Before any future extraction, exercise existing Agent Testing scenarios on each
+affected route: conceptual domain advice without provider calls; subsequent live
+action with unknown readiness; authorized execution with available readiness;
+and missing hook/reference fallback before the protected action. A missing owner,
+late instruction or weakened boundary requires restoring sufficient inline
+wording from Git and leaving the criterion open. Do not update generated mirrors
+by hand or claim efficiency while these cases remain unproven.
 
 ## Reference File Index
 

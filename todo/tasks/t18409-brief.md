@@ -38,6 +38,23 @@ must not depend on an optional plugin silently loading.
 
 ## How (Approach)
 
+### Files Scope
+
+- `.agents/AGENTS.md`
+- `.agents/reference/progressive-disclosure.md`
+- `.agents/configs/prompt-hook-candidates.conf`
+- `.agents/tools/build-agent/agent-review.md`
+- `.agents/reference/agent-routing.md`
+- `.agents/scripts/tests/test-context-engineering-guidance.sh`
+- `.agents/scripts/progressive-load-check.sh`
+- `todo/tasks/t18409-brief.md`
+
+Scope normalization for GH#31294: these paths are already named in Files to
+Modify and Complete Write Surface below. The local brief is included solely to
+persist this scope contract; no implementation authority is expanded. Owning
+reference targets beyond this list still require verified integration recovery.
+Verification remains the four commands in Verification Before Dispatch.
+
 ### Files to Modify
 
 - `EDIT: .agents/AGENTS.md`, `EDIT: .agents/reference/progressive-disclosure.md`, `EDIT: .agents/configs/prompt-hook-candidates.conf` — preserve the core and record each proven relocation/enforcement relationship.
