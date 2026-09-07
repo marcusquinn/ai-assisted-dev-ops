@@ -50,6 +50,18 @@ class OwnerTests(unittest.TestCase):
         with patch.object(OWNER.uuid, "getnode", return_value=1 << 40), self.assertRaises(ValueError):
             OWNER.host_id()
 
+    def test_linux_pid_namespace_is_part_of_identity(self):
+        with (
+            patch.object(OWNER.sys, "platform", "linux"),
+            patch.object(OWNER.Path, "read_text", return_value="boot-one"),
+            patch.object(OWNER.os, "readlink", return_value="pid:[100]"),
+        ):
+            identity = OWNER.capture(os.getpid())
+            with patch.object(OWNER.os, "readlink", return_value="pid:[200]"):
+                self.assertEqual(OWNER.observe(identity)["state"], "unknown")
+            with patch.object(OWNER.Path, "read_text", return_value="boot-two"):
+                self.assertEqual(OWNER.observe(identity)["state"], "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

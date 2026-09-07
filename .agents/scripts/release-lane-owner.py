@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 
 
 def host_id():
@@ -18,7 +19,14 @@ def host_id():
     # uuid's random fallback cannot establish stable cross-process identity.
     if (node >> 40) & 1:
         raise ValueError("stable host identity unavailable")
-    return hashlib.sha256(f"{socket.gethostname()}:{node}".encode()).hexdigest()
+    namespace = "darwin"
+    if sys.platform == "linux":
+        # Host-network containers can share MAC/hostname but not PID visibility.
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        namespace = f"{boot}:{os.readlink('/proc/self/ns/pid')}"
+    elif sys.platform != "darwin":
+        raise ValueError("unsupported process identity platform")
+    return hashlib.sha256(f"{socket.gethostname()}:{node}:{namespace}".encode()).hexdigest()
 
 
 def process_start(pid):
