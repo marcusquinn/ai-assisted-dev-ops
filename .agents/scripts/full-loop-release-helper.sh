@@ -96,6 +96,8 @@ source "${SCRIPT_DIR}/release-lane-helper.sh"
 source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
 # shellcheck source=./full-loop-release-aggregate-recovery.sh
 source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+# shellcheck source=./full-loop-release-snapshot-migration.sh
+source "${SCRIPT_DIR}/full-loop-release-snapshot-migration.sh"
 
 _FULL_LOOP_RESOLVED_SOURCE_JSON=""
 _FULL_LOOP_RESOLVED_SOURCE_PR=""
@@ -130,7 +132,8 @@ _full_loop_capture_release_authorization() {
 		.expected_sources | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
 	' <<<"$authorization_json") || return 1
 	if [[ "$(jq -r '.mode // ""' <<<"$authorization_json")" == "snapshot" ]]; then
-		release_lane_bind_snapshot "$repo" "$source_pr" "$authorization_json" || return 1
+		_full_loop_bind_snapshot_authorization "$repo" "$source_pr" "$authorization_json" \
+			"$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || return 1
 	fi
 	_full_loop_persist_release_authorization "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
 	return $?
@@ -589,7 +592,10 @@ _full_loop_release_start_new() {
 	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=false
 	_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION=false
 	_full_loop_release_guard_competing_lane "$repo" "$source_pr" || return $?
-	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr"); then
+	# A snapshot retry must not turn an implicit legacy subset into a new exact
+	# CLI assertion. The verified capture migrates compatible prior evidence.
+	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr") &&
+		! _full_loop_snapshot_retry_eligible "$repo" "$source_pr"; then
 		_full_loop_release_resolve_persisted_intent "$repo" "$source_pr" "$expected_sources" \
 			"$persisted_expected" "$release_type" || return $?
 		expected_sources="$_FULL_LOOP_RESERVED_RECOVERY_EXPECTED"
