@@ -1340,6 +1340,12 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18401 Restore profile activity reporting #bug #framework #interactive ref:GH#31199 -> [todo/tasks/t18401-brief.md] pr:#31200 completed:2026-09-05
 
+- [ ] t18413 Recover complete comparable Codacy default-branch analysis #codacy #interactive-needed #no-auto-dispatch #quality ref:GH#31457 -> [todo/tasks/t18413-brief.md]
+
+- [ ] t18414 Audit and correct Codacy policy drift after index recovery #auto-dispatch #codacy #quality #verification blocked-by:t18413 ref:GH#31459 -> [todo/tasks/t18414-brief.md]
+
+- [ ] t18415 Triage refreshed Codacy findings into bounded remediation children #auto-dispatch #codacy #decomposition #quality blocked-by:t18414 ref:GH#31460 -> [todo/tasks/t18415-brief.md]
+
 ## In Progress
 
 - [x] t2744 raise GraphQL throttle defaults and reduce pulse/stats cycle pressure — circuit breaker default `0.05`→`0.30` (trips at 1500 remaining instead of 250), REST fallback default `10`→`1000` (REST takes over earlier, GraphQL kept in reserve), pulse interval default `120s`→`180s`, stats-wrapper interval `900s`→`3600s`. Also fixes macOS launchd path that ignored `supervisor.pulse_interval_seconds` from settings. Evidence: GraphQL=0/5000 vs REST=4044/5000 with 21 EXHAUSTED events in current pulse log; per-cycle cost (~400-700 pts) × 30 cycles/hr × 14 repos exceeds 5000/hr ceiling by 2-4×. All env-overridable, fully backwards-compatible. See `todo/tasks/t2744-brief.md`. #framework #pulse #interactive ~1h ref:GH#20482 started:2026-04-22 pr:#20483 completed:2026-04-22
