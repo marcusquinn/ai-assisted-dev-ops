@@ -16,9 +16,16 @@ WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN="unknown"
 WORKTREE_RECOVERY_PLAN_STATE_ACTIVE="active"
 WORKTREE_RECOVERY_PLAN_STATE_CLEAR="clear"
 WORKTREE_RECOVERY_PLAN_STATE_DIRTY="dirty"
+WORKTREE_RECOVERY_PLAN_STATE_NOT_APPLICABLE="not-applicable"
+WORKTREE_RECOVERY_PLAN_BRANCH_DETACHED="detached"
+WORKTREE_RECOVERY_PLAN_COMMIT_PUBLISHED="published"
+WORKTREE_RECOVERY_PLAN_COMMIT_UNPROVEN="unproven"
 WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT="exact"
 WORKTREE_RECOVERY_PLAN_JSON_NULL="null"
 WORKTREE_RECOVERY_PRODUCER="worktree-helper"
+WORKTREE_RECOVERY_PROFILE_PRODUCER="profile-readme-helper.sh"
+WORKTREE_RECOVERY_PROFILE_CONTEXT="recovery_path=profile-publication-archive profile_scratch=true"
+WORKTREE_RECOVERY_PROFILE_PROVENANCE="profile-publication"
 WORKTREE_RECOVERY_AUTOMATION_POLICY_SCHEMA="aidevops.worktree-recovery-automation-policy/v1"
 WORKTREE_RECOVERY_AUTOMATION_POLICY_ID="bounded-terminal-evidence-v1"
 
@@ -592,8 +599,8 @@ _worktree_recovery_plan_claim_state() {
 	branch=$(printf '%s\n' "$identity_json" | jq -r '.branch') || return 1
 	# Detached archives have no branch-keyed claim. Do not invent a live owner
 	# or report clear evidence: the classifier still protects detached identity.
-	if [[ "$branch" == "detached" ]]; then
-		printf '%s\n' 'not-applicable'
+	if [[ "$branch" == "$WORKTREE_RECOVERY_PLAN_BRANCH_DETACHED" ]]; then
+		printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_NOT_APPLICABLE"
 		return 0
 	fi
 	[[ "$branch" == refs/heads/* ]] || {
@@ -703,6 +710,64 @@ _worktree_recovery_plan_identity_issue_number() {
 	return 1
 }
 
+_worktree_recovery_plan_is_profile_publication() {
+	local identity_json="$1"
+	local format=""
+	local branch=""
+	local producer=""
+	local producer_context=""
+
+	format=$(printf '%s\n' "$identity_json" | jq -r '.format // ""') || return 1
+	branch=$(printf '%s\n' "$identity_json" | jq -r '.branch // ""') || return 1
+	producer=$(printf '%s\n' "$identity_json" | jq -r '.producer // ""') || return 1
+	producer_context=$(printf '%s\n' "$identity_json" | jq -r '.producer_context // ""') || return 1
+	[[ "$format" == "$_WT_RECOVERY_FORMAT_V2" && "$branch" == "$WORKTREE_RECOVERY_PLAN_BRANCH_DETACHED" &&
+		"$producer" == "$WORKTREE_RECOVERY_PROFILE_PRODUCER" &&
+		"$producer_context" == "$WORKTREE_RECOVERY_PROFILE_CONTEXT" ]]
+}
+
+_worktree_recovery_plan_profile_publication_evidence_json() {
+	local identity_json="$1"
+	local archive_path=""
+	local head=""
+	local repo_slug=""
+	local default_branch=""
+	local comparison=""
+	local comparison_status=""
+	local merge_base=""
+	local commit_state="$WORKTREE_RECOVERY_PLAN_COMMIT_UNPROVEN"
+
+	archive_path=$(printf '%s\n' "$identity_json" | jq -r '.archive_path') || return 1
+	head=$(printf '%s\n' "$identity_json" | jq -r '.head') || return 1
+	repo_slug=$(_worktree_recovery_plan_repo_slug "$archive_path") || {
+		jq -cn --arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
+			--arg provenance "$WORKTREE_RECOVERY_PROFILE_PROVENANCE" \
+			'{commit:$unavailable,open_pr:$unavailable,task:$unavailable,issue_number:null,repo:null,provenance:$provenance}'
+		return 0
+	}
+	if ! command -v gh >/dev/null 2>&1 ||
+		! default_branch=$(gh api "repos/${repo_slug}" --jq '.default_branch // empty' 2>/dev/null) ||
+		[[ -z "$default_branch" ]] ||
+		! comparison=$(gh api "repos/${repo_slug}/compare/${head}...${default_branch}" \
+			--jq '[.status, .merge_base_commit.sha] | @tsv' 2>/dev/null); then
+		jq -cn --arg repo "$repo_slug" --arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
+			--arg provenance "$WORKTREE_RECOVERY_PROFILE_PROVENANCE" \
+			'{commit:$unavailable,open_pr:$unavailable,task:$unavailable,issue_number:null,repo:$repo,provenance:$provenance}'
+		return 0
+	fi
+	IFS=$'\t' read -r comparison_status merge_base <<<"$comparison"
+	if [[ "$merge_base" == "$head" ]] &&
+		[[ "$comparison_status" == "ahead" || "$comparison_status" == "identical" ]]; then
+		commit_state="$WORKTREE_RECOVERY_PLAN_COMMIT_PUBLISHED"
+	fi
+	jq -cn --arg repo "$repo_slug" --arg commit "$commit_state" \
+		--arg clear "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" \
+		--arg task "$WORKTREE_RECOVERY_PLAN_STATE_NOT_APPLICABLE" \
+		--arg provenance "$WORKTREE_RECOVERY_PROFILE_PROVENANCE" \
+		'{commit:$commit,open_pr:$clear,task:$task,issue_number:null,repo:$repo,provenance:$provenance}'
+	return $?
+}
+
 _worktree_recovery_plan_external_evidence_json() {
 	local identity_json="$1"
 	local archive_path="" source_path="" branch_name="" head="" repo_slug=""
@@ -714,6 +779,17 @@ _worktree_recovery_plan_external_evidence_json() {
 	source_path=$(printf '%s\n' "$identity_json" | jq -r '.source_path') || return 1
 	branch=$(printf '%s\n' "$identity_json" | jq -r '.branch') || return 1
 	head=$(printf '%s\n' "$identity_json" | jq -r '.head') || return 1
+	if [[ "$branch" == "$WORKTREE_RECOVERY_PLAN_BRANCH_DETACHED" ]]; then
+		if _worktree_recovery_plan_is_profile_publication "$identity_json"; then
+			_worktree_recovery_plan_profile_publication_evidence_json "$identity_json"
+			return $?
+		fi
+		jq -cn --arg commit "$WORKTREE_RECOVERY_PLAN_COMMIT_UNPROVEN" \
+			--arg clear "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" \
+			--arg task "$WORKTREE_RECOVERY_PLAN_STATE_NOT_APPLICABLE" \
+			'{commit:$commit,open_pr:$clear,task:$task,issue_number:null,repo:null,provenance:"unsupported-detached-producer"}'
+		return 0
+	fi
 	branch_name="${branch#refs/heads/}"
 	repo_slug=$(_worktree_recovery_plan_repo_slug "$archive_path") || {
 		jq -cn --arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
@@ -805,9 +881,12 @@ _worktree_recovery_plan_evidence_json() {
 	fi
 	claim_state=$(_worktree_recovery_plan_claim_state "$identity_json") || return 1
 	if [[ "$claim_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
-		_worktree_recovery_plan_partial_evidence_json \
-			"$git_state" "$worktree_state" "$registry_state" "$claim_state"
-		return $?
+		if [[ "$claim_state" != "$WORKTREE_RECOVERY_PLAN_STATE_NOT_APPLICABLE" ]] ||
+			! _worktree_recovery_plan_is_profile_publication "$identity_json"; then
+			_worktree_recovery_plan_partial_evidence_json \
+				"$git_state" "$worktree_state" "$registry_state" "$claim_state"
+			return $?
+		fi
 	fi
 	process_state=$(_worktree_recovery_plan_process_state "$identity_json") || return 1
 	if [[ "$process_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
@@ -818,9 +897,11 @@ _worktree_recovery_plan_evidence_json() {
 	external_json=$(_worktree_recovery_plan_external_evidence_json "$identity_json") || return 1
 	printf '%s\n' "$external_json" | jq -e \
 		--arg clear "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" \
+		--arg published "$WORKTREE_RECOVERY_PLAN_COMMIT_PUBLISHED" \
+		--arg unproven "$WORKTREE_RECOVERY_PLAN_COMMIT_UNPROVEN" \
 		--arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" '
 		type == "object" and
-		(.commit | IN("merged","unproven",$unavailable)) and
+		(.commit | IN("merged",$published,$unproven,$unavailable)) and
 		(.open_pr | IN("active",$clear,$unavailable)) and
 		(.task | type == "string")
 	' >/dev/null 2>&1 || return 1
@@ -845,8 +926,19 @@ _worktree_recovery_plan_classification_json() {
 		--arg clear "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" \
 		--arg dirty "$WORKTREE_RECOVERY_PLAN_STATE_DIRTY" \
 		--arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
+		--arg profile_producer "$WORKTREE_RECOVERY_PROFILE_PRODUCER" \
+		--arg profile_context "$WORKTREE_RECOVERY_PROFILE_CONTEXT" \
+		--arg profile_provenance "$WORKTREE_RECOVERY_PROFILE_PROVENANCE" \
+		--arg published "$WORKTREE_RECOVERY_PLAN_COMMIT_PUBLISHED" \
+		--arg not_applicable "$WORKTREE_RECOVERY_PLAN_STATE_NOT_APPLICABLE" \
 		--argjson identity "$identity_json" --argjson evidence "$evidence_json" \
 		--argjson stable "$stable" '
+		def profile_publication:
+			$identity.format == "aidevops-worktree-recovery-v2" and
+			$identity.branch == "detached" and
+			$identity.producer == $profile_producer and
+			$identity.producer_context == $profile_context and
+			($evidence.external.provenance // "") == $profile_provenance;
 		if $stable != true then {disposition:$unknown,reasons:["identity-or-size-changed"]}
 		elif $evidence.git == $dirty then {disposition:$protected,reasons:["archive-worktree-dirty"]}
 		elif $evidence.worktree == $active then {disposition:$protected,reasons:["active-git-worktree-reference"]}
@@ -855,10 +947,19 @@ _worktree_recovery_plan_classification_json() {
 		elif $evidence.process == $active then {disposition:$protected,reasons:["active-process-reference"]}
 		elif $evidence.external.open_pr == $active then {disposition:$protected,reasons:["open-pull-request"]}
 		elif $identity.source_removal_outcome != "removed" then {disposition:$protected,reasons:["source-removal-not-complete"]}
-		elif ($identity.branch | startswith("refs/heads/") | not) then {disposition:$protected,reasons:["detached-or-unresolved-branch"]}
+		elif ($identity.branch | startswith("refs/heads/") | not) and (profile_publication | not)
+		then {disposition:$protected,reasons:["detached-or-unresolved-branch"]}
 		elif ([ $evidence.git,$evidence.worktree,$evidence.registry,$evidence.claim,$evidence.process,
 			$evidence.external.commit,$evidence.external.open_pr,$evidence.external.task ] | index($unavailable)) != null
 		then {disposition:$unknown,reasons:["required-evidence-unavailable"]}
+		elif profile_publication and $evidence.external.commit != $published
+		then {disposition:$protected,reasons:["exact-commit-not-published"]}
+		elif profile_publication and $evidence.external.task != $not_applicable
+		then {disposition:$unknown,reasons:["unrecognised-evidence-state"]}
+		elif profile_publication and
+			([ $evidence.git,$evidence.worktree,$evidence.registry,$evidence.process ] | all(. == $clear)) and
+			$evidence.claim == $not_applicable
+		then {disposition:$candidate,reasons:["producer-published-detached-evidence-clear"]}
 		elif $evidence.external.commit != "merged" then {disposition:$protected,reasons:["exact-commit-not-merged"]}
 		elif $evidence.external.task != "closed" then {disposition:$protected,reasons:["linked-task-not-closed"]}
 		elif ([ $evidence.git,$evidence.worktree,$evidence.registry,$evidence.claim,$evidence.process ] | all(. == $clear))

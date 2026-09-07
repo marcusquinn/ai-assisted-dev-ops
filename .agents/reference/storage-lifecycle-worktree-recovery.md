@@ -80,8 +80,8 @@ expected allocated bytes, schema, and permanent-delete action. Earlier or
 tokenless plan versions are never upgraded into destructive authorization.
 
 Candidate status requires a valid complete archive, completed source removal,
-a clean tracked/untracked/user-ignored Git state, an exact merged commit, a
-closed linked task, no open pull request, no live Git
+a clean tracked/untracked/user-ignored Git state, an exact terminal commit, no
+open pull request, no live Git
 worktree/registry/claim/process reference, and exact readable sizing. Ignored,
 untracked directories with recognised regenerable-cache identities
 (`node_modules`, `.pnpm-store`, `.yarn/cache`, `.next/cache`, `.nuxt/cache`,
@@ -94,6 +94,16 @@ validation, or sizing is `unknown`. Identity and allocated bytes are read again
 immediately before an entry is emitted, so concurrent drift downgrades only
 that entry. Age, size, and OpenCode or Claude session history never prove
 reclaimability. Plan files grant no deletion authority by themselves.
+
+Branch-backed archives prove terminal state through an exact merged PR head and
+a closed linked task. Detached archives remain protected unless their v2
+producer identity matches the profile publication scratch-worktree contract.
+That narrow producer has no branch-keyed claim or linked task; it becomes
+eligible only when GitHub independently proves the archived HEAD is the merge
+base of the repository's current default-branch tip. A changed producer/context,
+unavailable API, non-ancestor commit, dirty archive, or live local reference
+still preserves the bucket. Other detached producers remain protected until
+they define an equally specific evidence contract.
 
 Automatic maintenance may reclaim those same approved cache roots from an
 otherwise protected mixed archive without deleting the archive. This narrower
