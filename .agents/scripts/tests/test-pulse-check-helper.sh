@@ -680,6 +680,11 @@ AIDEVOPS_BODY_FORMAT_STRICT=1 bash "${SCRIPT_DIR}/issue-body-format-helper.sh" c
 assert_eq "generated finding passes strict execution body contract" "0" "$format_rc"
 assert_contains "generated recovery requires outcome evidence" "worker exits alone do not establish recovery" "$BODY"
 
+reproducer_rc=0
+bash "${SCRIPT_DIR}/log-issue-helper.sh" validate-brief "${TEST_ROOT}/capture.txt.body" || reproducer_rc=$?
+assert_eq "generated finding passes production framework-bug reproducer validation" "0" "$reproducer_rc"
+assert_contains "generated finding distinguishes symptom from cause" "**Causal status**: unconfirmed investigation" "$BODY"
+
 rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
 READ_APPLY_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_PERMISSION_FIXTURE=read" "$HELPER" apply --repo owner/aidevops 2>&1)
 READ_CAPTURE=""
