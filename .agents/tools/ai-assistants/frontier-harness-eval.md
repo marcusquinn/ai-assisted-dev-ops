@@ -165,6 +165,11 @@ Source task commit: `2fd12b88aafdd04a52c298e3940bcb189f9766d6` from
 These are small-sample pilot observations, **not FrontierHarness leaderboard scores**.
 No Kimi K3/Fireworks run, full 30-task result, or statistical superiority claim exists.
 
+For outcome, attention, maintenance, and economic-value definitions—and the
+bounded initial report separating measured evidence from unknowns—see
+`reference/value-evaluation.md`. FrontierHarness run reports expose additive
+`value_metrics`; fields this pilot did not measure remain `null`, never zero.
+
 | Configuration | Verifier | Agent seconds | Completed upstream input tokens, including cache | Completed upstream output tokens | Completed compactions |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Stock, normal context | Pass | 131.040 | 28,543 | 1,611 | 0 |

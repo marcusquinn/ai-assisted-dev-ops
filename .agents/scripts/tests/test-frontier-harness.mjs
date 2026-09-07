@@ -188,6 +188,12 @@ test("run report joins verifier evidence, detects overridden output and preserve
     saveEvents();
     const report = summarizeRun(root);
     assert.equal(report.comparison_valid, true);
+    assert.equal(report.value_metrics.verified_outcome, true);
+    assert.equal(report.value_metrics.user_active_seconds, null);
+    assert.equal(report.value_metrics.actual_paid_charges_usd, null);
+    assert.equal(report.value_metrics.coverage.verified_outcome, "measured");
+    assert.equal(report.value_metrics.coverage.user_attention, "unmeasured");
+    assert.equal(report.value_metrics.confidence, "limited");
     assert.equal(report.telemetry.summary_output_tokens, 3);
     assert.equal(report.telemetry.calibration.applied[0].capacity.usable_input, 14336);
     assert.equal(report.upstream_usage_complete, false);
@@ -211,9 +217,15 @@ test("run report joins verifier evidence, detects overridden output and preserve
     saveEvents();
     assert.equal(summarizeRun(root).comparison_valid, false);
     assert.equal(summarizeRun(root).verifier_reward, 1, "never rewrite the verifier verdict");
+    result.verifier_result = { rewards: {} };
+    json(join(trialDir, "result.json"), result);
+    assert.equal(summarizeRun(root).value_metrics.verified_outcome, null);
+    assert.equal(summarizeRun(root).value_metrics.confidence, "unknown");
+    result.verifier_result = { rewards: { reward: 1 } };
     result.exception_info = { exception_type: "AgentTimeoutError" };
     json(join(trialDir, "result.json"), result);
     assert.equal(summarizeRun(root).task_passed, false);
+    assert.equal(summarizeRun(root).value_metrics.verified_outcome, false);
     assert.equal(summarizeRun(root).trial_exception, "AgentTimeoutError");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
