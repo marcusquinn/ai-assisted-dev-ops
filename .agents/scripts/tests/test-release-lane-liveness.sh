@@ -78,6 +78,12 @@ STATE=$(jq -c --arg recent "$RECENT" '.updated_at=$recent' <<<"$BASE")
 AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 refused 'caller cannot shorten five-minute recovery grace'
 STATE="$BASE"
 
+STATE=$(jq -c '.phase="preparing"' <<<"$BASE")
+report=$(release_lane_liveness_report "$STATE")
+[[ "$report" == *"Rerun the exact authorized release command"* ]] || exit 1
+printf 'PASS dead tagless preparing status routes through fenced same-command recovery\n'
+STATE="$BASE"
+
 AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo release_lane_merge_guard test/repo 202 main feature/ordinary
 [[ "$WRITES" == 0 ]] || exit 1
 release_lane_recover_reservation test/repo 101

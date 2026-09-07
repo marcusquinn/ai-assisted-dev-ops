@@ -97,8 +97,16 @@ Competing release starts use the same bounded recovery for eligible reservations
 ordinary merge guards do not read or mutate publisher ownership. Status remains read-only.
 
 Age alone never unlocks a lane. Live/recent reservations, legacy/foreign owners,
-preparing/publication phases and aggregation recovery are not automatically
-released. For a reservation without a recorded tag, tag-based `reconcile` may
+publication phases and aggregation recovery are not automatically released. A
+stale `preparing` lane is resumable only by the exact same authorized source and
+increment when the local executor is verifiably dead, its deterministic detached
+worktree remains isolated at the pinned snapshot, no release process survives,
+the persisted source manifest still matches, and the intended tag, protected
+release branch, GitHub release, npm version, and Homebrew version are all proven
+absent. The publisher rotates the operation token through the lane compare-and-swap,
+retains durable `preparing_recovery` evidence, and restarts from a fresh copy of
+the pinned commit; lookup uncertainty or any existing artifact refuses recovery.
+For a reservation without a recorded tag, tag-based `reconcile` may
 have nothing to resume: the authorized release owner must restart the same
 source with its original increment and persisted intent. This does not grant a
 new session publication authority. Do not report background progress without
