@@ -131,10 +131,11 @@ class Reconciliation:
 
 
 def reconcile_scope(directory: Path, unresolved_scope: str, owner_scope: str,
-                    *, now: float | None, deferred_type) -> dict:
+                    *, context: tuple[float | None, type[BaseException]]) -> dict:
     """Run reconciliation under an immediate SQLite transaction."""
     if unresolved_scope == owner_scope:
         raise ValueError("a configured GitHub quota owner is required")
+    now, deferred_type = context
     path = directory / "admission.sqlite3"
     if not path.is_file() or path.is_symlink():
         return {"state": "no_state"}

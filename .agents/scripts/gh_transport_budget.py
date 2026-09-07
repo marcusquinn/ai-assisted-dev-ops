@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from gh_transport_capacity import capacity_wait
+from gh_transport_identity import quota_owner
 from gh_transport_reconcile import reconcile_scope as _reconcile_scope
 from gh_transport_recovery import admission_status, mark_dead_reservations, probe_recovers, reserve_probe_allowed
 
@@ -41,15 +42,6 @@ def private_directory(path: Path) -> None:
     if path.stat().st_uid != os.getuid():
         raise ValueError("transport state directory is not owned by this user")
     path.chmod(0o700)
-
-
-def quota_owner() -> tuple[str, bool]:
-    owner = os.environ.get("AIDEVOPS_GH_QUOTA_OWNER", "")
-    if not owner or owner == "unresolved":
-        return "unresolved", False
-    if "\0" in owner or len(owner) > 256:
-        raise ValueError("invalid GitHub quota owner")
-    return owner, True
 
 
 def scope_key(host: str, owner: str | None = None) -> str:
@@ -319,7 +311,7 @@ def reconcile_scope(directory: Path, unresolved_scope: str, owner_scope: str,
     """Replace ambiguous local evidence with one attributed bootstrap boundary."""
     private_directory(directory)
     return _reconcile_scope(directory, unresolved_scope, owner_scope,
-                            now=now, deferred_type=Deferred)
+                            context=(now, Deferred))
 
 
 if __name__ == "__main__":
