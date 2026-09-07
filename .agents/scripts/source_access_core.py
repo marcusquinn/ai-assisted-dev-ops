@@ -633,8 +633,17 @@ def create_source_proposal(
     content = canonical_json(record) + b"\n"
     _require_source(len(content) <= MAX_REQUEST_BYTES, "proposal metadata exceeds the storage limit")
     with _proposal_store(config, spec.home, spec.uid) as directory:
+        records = _proposal_records(directory)
+        for candidate in records:
+            try:
+                existing = load_source_proposal(config, spec.home, candidate.stem, spec.uid)
+            except SourceAccessError:
+                continue
+            comparable = {**body, "nonce": existing.get("nonce"), "created_at": existing["created_at"]}
+            if existing["created_at"] <= spec.now and canonical_json(comparable) == canonical_json(existing):
+                return candidate.stem
         _require_source(
-            len(_proposal_records(directory)) < MAX_PENDING_PROPOSALS,
+            len(records) < MAX_PENDING_PROPOSALS,
             "proposal store is full; explicitly withdraw an unused proposal",
         )
         _require_source(not os.path.lexists(directory / f"{proposal_id}.json"), "proposal already exists")
@@ -655,7 +664,8 @@ def load_source_proposal(config: Config, home: Path, proposal_id: str, uid: int)
     _require_source(
         record.get("schema") == SCHEMA_PROPOSAL and record.get("proposal_id") == proposal_id
         and record.get("state") == "pending" and isinstance(body, dict)
-        and body.get("uid") == uid and hashlib.sha256(canonical_json(body)).hexdigest() == proposal_id,
+        and type(body.get("uid")) is int and body["uid"] == uid
+        and hashlib.sha256(canonical_json(body)).hexdigest() == proposal_id,
         "proposal identity is invalid or was changed",
     )
     _require_source(

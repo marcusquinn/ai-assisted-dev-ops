@@ -123,6 +123,9 @@ class SourceAccessHelperTests(unittest.TestCase):
         original = core.load_source_proposal(self.config, self.home, proposal_id, self.uid)
         for days in (1, 7):
             delayed = replace(spec, now=self.now + days * 86400)
+            self.assertEqual(proposal_id, core.create_source_proposal(
+                self.config, delayed, issue_snapshot_sha256=issue_digest,
+            ))
             self.assertEqual(original, core.revalidate_source_proposal_metadata(
                 self.config, delayed, proposal_id, issue_snapshot_sha256=issue_digest,
             ))
@@ -194,10 +197,10 @@ class SourceAccessHelperTests(unittest.TestCase):
         spec = self._proposal_spec()
         with mock.patch.object(core, "MAX_PENDING_PROPOSALS", 2):
             first = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
-            second = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+            second = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="b" * 64)
             self.assertNotEqual(first, second)
             with self.assertRaisesRegex(HELPER.SourceAccessError, "store is full"):
-                core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+                core.create_source_proposal(self.config, spec, issue_snapshot_sha256="c" * 64)
             core.withdraw_source_proposal(self.config, self.home, first, self.uid)
             with self.assertRaises(HELPER.SourceAccessError):
                 core.load_source_proposal(self.config, self.home, first, self.uid)
