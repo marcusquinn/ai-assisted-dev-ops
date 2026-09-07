@@ -10,8 +10,11 @@ import os
 import pwd
 import re
 import secrets
+import socket
 import stat
+import struct
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -419,6 +422,93 @@ def _manifest_entry(identity: tuple[str, str, str]) -> dict[str, str]:
 
 def proposal_directory(config: Config, home: Path) -> Path:
     return request_directory(config, home) / "proposals"
+
+
+def _source_context_socket(path: Path, uid: int) -> dict[str, int]:
+    _require_source(path.is_absolute() and not _has_symlink_component(path), "unsafe context socket")
+    _require_source(_trusted_private_directory(path.parent, uid), "unsafe context socket directory")
+    metadata = path.lstat()
+    _require_source(
+        stat.S_ISSOCK(metadata.st_mode) and metadata.st_uid == uid
+        and metadata.st_mode & 0o077 == 0 and metadata.st_nlink == 1,
+        "unsafe context socket",
+    )
+    return {"device": metadata.st_dev, "inode": metadata.st_ino}
+
+
+def _context_peer_identity(connection: socket.socket) -> tuple[int, int]:
+    if sys.platform == "darwin":
+        # Darwin sys/un.h: SOL_LOCAL=0, LOCAL_PEERCRED=1, LOCAL_PEERPID=2.
+        # sys/ucred.h: xucred begins with cr_version and effective cr_uid.
+        credentials = connection.getsockopt(0, 1, 128)
+        version, uid = struct.unpack_from("=II", credentials)
+        _require_source(version == 0, "unsupported context peer credential layout")
+        return connection.getsockopt(0, 2), uid
+    _require_source(hasattr(socket, "SO_PEERCRED"), "context peer credentials are unsupported")
+    credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    pid, uid, _gid = struct.unpack("=iII", credentials)
+    return pid, uid
+
+
+def _validated_context_reply(
+    reply: Any, query: dict[str, Any], pid: int, uid: int
+) -> dict[str, Any]:
+    _require_source(isinstance(reply, dict), "invalid source context response")
+    expected = {"schema": "aidevops-source-context-reply/v1", "authority": "none",
+                "nonce": query["nonce"], "session_id": query["session_id"],
+                "repo_root": query["repo_root"], "runtime_pid": pid, "uid": uid}
+    _require_source(
+        all(reply.get(key) == value for key, value in expected.items())
+        and type(reply.get("runtime_pid")) is int and type(reply.get("uid")) is int,
+        "source context peer identity or challenge did not match",
+    )
+    _require_source(
+        isinstance(reply.get("runtime_instance_id"), str)
+        and re.fullmatch(r"[a-f0-9]{32}", reply["runtime_instance_id"]) is not None
+        and type(reply.get("session_created_at")) is int and reply["session_created_at"] >= 0
+        and isinstance(reply.get("project_id"), str) and 0 < len(reply["project_id"]) <= 256,
+        "source context generation is invalid",
+    )
+    fields = ("session_id", "repo_root", "runtime_pid", "uid", "runtime_instance_id",
+              "session_created_at", "project_id")
+    return {key: reply[key] for key in fields}
+
+
+def _context_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    _require_source(remaining > 0, "source context deadline exceeded")
+    return remaining
+
+
+def query_source_context(socket_path: str, session_id: str, repo_root: str, uid: int) -> dict[str, Any]:
+    """Challenge a live peer. This metadata alone never authorizes source reads."""
+    query = {"schema": "aidevops-source-context-query/v1", "nonce": secrets.token_hex(32),
+             "session_id": _validate_session_id(session_id), "repo_root": repo_root}
+    path = Path(socket_path)
+    try:
+        identity = _source_context_socket(path, uid)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            deadline = time.monotonic() + 5
+            connection.settimeout(_context_timeout(deadline))
+            connection.connect(str(path))
+            pid, peer_uid = _context_peer_identity(connection)
+            _require_source(pid > 0 and peer_uid == uid, "source context belongs to another user")
+            connection.settimeout(_context_timeout(deadline))
+            connection.sendall(canonical_json(query) + b"\n")
+            response = bytearray()
+            while True:
+                connection.settimeout(_context_timeout(deadline))
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                response.extend(chunk)
+                _require_source(len(response) <= 8192, "source context response is too large")
+            reply = json.loads(response.decode("utf-8"))
+        _require_source(identity == _source_context_socket(path, uid), "source context socket changed")
+        context = _validated_context_reply(reply, query, pid, peer_uid)
+        return {**context, "socket_path": str(path), "socket_identity": identity}
+    except (OSError, ValueError, struct.error, RecursionError) as exc:
+        raise SourceAccessError("source context is unavailable; no authority was issued") from exc
 
 
 @contextmanager

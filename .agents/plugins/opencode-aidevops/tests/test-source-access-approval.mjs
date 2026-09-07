@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -16,8 +16,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
+import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import {
   SOURCE_ACCESS_REASON,
@@ -28,6 +30,123 @@ import {
   verifySourceAccessReceipt,
 } from "../source-access-approval.mjs";
 import { createQualityHooks } from "../quality-hooks.mjs";
+import {
+  createSourceContextResponder,
+  listenSourceContext,
+  SOURCE_CONTEXT_QUERY,
+  sourceContextInstanceId,
+} from "../source-access-context.mjs";
+
+function contextFixture() {
+  const session = {
+    id: "ses_context_fixture", projectID: "fixture", directory: "/repo",
+    time: { created: 1800000000000 },
+  };
+  const query = { schema: SOURCE_CONTEXT_QUERY, nonce: "a".repeat(64),
+    session_id: session.id, repo_root: "/implementation" };
+  const state = { present: true, owned: true, sameRepo: true, lookups: 0 };
+  const respond = createSourceContextResponder({
+    lookupSession: async (id) => {
+      state.lookups++;
+      assert.equal(id, session.id);
+      return state.present ? session : undefined;
+    },
+    verifyOwner: async () => state.owned,
+    sameRepository: async () => state.sameRepo,
+  });
+  return { respond, query, state, session };
+}
+
+test("source context rechecks an idle session without granting authority", async () => {
+  const fixture = contextFixture();
+  const first = await fixture.respond(fixture.query);
+  assert.equal(first.authority, "none");
+  assert.equal(first.runtime_instance_id, sourceContextInstanceId);
+  assert.equal(first.runtime_pid, process.pid);
+  assert.equal(first.session_created_at, fixture.session.time.created);
+  fixture.state.present = false;
+  await assert.rejects(fixture.respond(fixture.query), /session is unavailable/);
+  assert.equal(fixture.state.lookups, 2);
+});
+
+test("source context refuses foreign worktrees, missing owners and cancelled queries", async () => {
+  const fixture = contextFixture();
+  fixture.state.sameRepo = false;
+  await assert.rejects(fixture.respond(fixture.query), /ownership is unavailable/);
+  fixture.state.sameRepo = true;
+  fixture.state.owned = false;
+  await assert.rejects(fixture.respond(fixture.query), /ownership is unavailable/);
+  fixture.state.owned = true;
+  await assert.rejects(fixture.respond({ ...fixture.query, nonce: "invalid" }), /invalid/);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(fixture.respond(fixture.query, controller.signal), /invalid/);
+});
+
+function contextRoundTrip(socketPath, query) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath);
+    let result = "";
+    socket.setTimeout(2000, () => socket.destroy(new Error("context fixture timed out")));
+    socket.on("error", reject);
+    socket.on("connect", () => socket.write(`${JSON.stringify(query)}\n`));
+    socket.on("data", (data) => { result += data; });
+    socket.on("end", () => {
+      try { resolve(JSON.parse(result)); } catch (error) { reject(error); }
+    });
+  });
+}
+
+test("source context transport returns only bounded metadata and sanitized failure", async () => {
+  const parent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
+  mkdirSync(parent, { recursive: true });
+  const directory = mkdtempSync(join(parent, "sc-"));
+  const fixture = contextFixture();
+  let listener;
+  try {
+    listener = await listenSourceContext({ directory, respond: fixture.respond });
+    const reply = await contextRoundTrip(listener.socketPath, fixture.query);
+    assert.equal(reply.nonce, fixture.query.nonce);
+    assert.equal(reply.authority, "none");
+    fixture.state.present = false;
+    assert.deepEqual(await contextRoundTrip(listener.socketPath, fixture.query), {
+      error: "context unavailable",
+    });
+  } finally {
+    listener?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Python context probe uses kernel peer identity rather than a claimed PID", async () => {
+  const parent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
+  mkdirSync(parent, { recursive: true });
+  const directory = mkdtempSync(join(parent, "sc-"));
+  const fixture = contextFixture();
+  const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+  const script = "import runpy,sys,json,os; m=runpy.run_path(sys.argv[1]); "
+    + "print(json.dumps(m['_SOURCE_CORE'].query_source_context(sys.argv[2],sys.argv[3],sys.argv[4],os.getuid())))";
+  let forged = false;
+  let listener;
+  try {
+    listener = await listenSourceContext({ directory, respond: async (...args) => {
+      const reply = await fixture.respond(...args);
+      return forged ? { ...reply, runtime_pid: process.pid + 1 } : reply;
+    } });
+    const query = () => promisify(execFile)("python3", ["-I", "-B", "-c", script,
+      helper, listener.socketPath, fixture.query.session_id, fixture.query.repo_root], { timeout: 10000 });
+    const { stdout } = await query();
+    const context = JSON.parse(stdout);
+    assert.equal(context.runtime_pid, process.pid);
+    assert.equal(context.uid, process.getuid());
+    assert.equal(context.runtime_instance_id, sourceContextInstanceId);
+    forged = true;
+    await assert.rejects(query(), /peer identity or challenge did not match/);
+  } finally {
+    listener?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 const BASE = {
   tool: "read",
