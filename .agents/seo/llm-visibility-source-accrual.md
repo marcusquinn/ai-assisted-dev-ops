@@ -21,6 +21,14 @@ For each source, record:
 | Supported claims | Which report claims the source supports. |
 | Trust level | Verified, partial, inferred, or missing. |
 | Recheck path | Command, routine, or manual step to refresh the source. |
+| Publisher/ownership | Publisher, known ownership group, evidence for grouping, or unknown. |
+| Commercial relationship | Owned, paid, partner, editorial, or unknown; record disclosure evidence. |
+| Derivation | Original source ID, syndicated/copied/quoted relationship, or unknown. |
+| Claim substantiation | Independent verification, first-party proof, repetition only, or unknown; supporting method/section. |
+
+Before counting corroboration, use `entity-evidence-audit.md` to group ownership
+and derivation separately. Domain count is not independent-source count; an
+independent publisher repeating a vendor claim has not necessarily verified it.
 
 ## Source Families
 
