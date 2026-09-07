@@ -6,7 +6,7 @@
 
 import { existsSync } from "fs";
 import { execFileSync, execFile } from "child_process";
-import { join } from "path";
+import { join, resolve } from "path";
 import { recordToolCall, toolCallSucceeded } from "./observability.mjs";
 import {
   consumeIntentRecord,
@@ -253,7 +253,7 @@ function enforceBashToolSafety(ctx, log, input, output, sessionId) {
   });
 }
 
-function enforceReadAndFileQuality(ctx, log, input, output, sessionId) {
+function enforceReadAndFileQuality(ctx, log, input, output, sessionId, sourceContextForPath) {
   checkSecretReadWithApproval({
     tool: input.tool,
     args: output.args || {},
@@ -269,6 +269,7 @@ function enforceReadAndFileQuality(ctx, log, input, output, sessionId) {
     verify: ctx.verifySourceAccessReceipt,
     brokerMatches: ctx.sourceAccessBrokerMatches,
     requestRun: ctx.sourceAccessRequestRun,
+    sourceContext: sourceContextForPath(output.args?.filePath || output.args?.file_path || ""),
   });
   checkResearchStagingAccess(input.tool, output.args || {});
   if (!isWriteOrEditTool(input.tool)) return;
@@ -276,7 +277,22 @@ function enforceReadAndFileQuality(ctx, log, input, output, sessionId) {
   if (filePath) runFileQualityGate(ctx, filePath, output.args);
 }
 
-function handleToolBefore(ctx, log, input, output) {
+async function resolveToolSourceContexts(ctx, input, output, sessionId, after = false) {
+  if (!ctx.sourceAccessRuntime) return () => undefined;
+  const paths = ctx.sourceAccessProvenance.contextPaths(sessionId, input, output, after);
+  const path = output.args?.filePath || output.args?.file_path || "";
+  if (!after && isReadTool(input.tool) && path && secretReadBlockReason(path) === SOURCE_ACCESS_REASON) {
+    paths.push(path);
+  }
+  try {
+    const contexts = await ctx.sourceAccessRuntime.contexts(sessionId, paths);
+    return (filePath) => contexts.get(resolve(filePath));
+  } catch {
+    return () => undefined;
+  }
+}
+
+async function handleToolBefore(ctx, log, input, output) {
   ctx.continuationGuard?.beforeTool(input, output);
   enforceDirectFileMutationSafety(ctx, input, output);
 
@@ -299,15 +315,17 @@ function handleToolBefore(ctx, log, input, output) {
   }).catch(() => {});
 
   const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
+  const sourceContextForPath = await resolveToolSourceContexts(ctx, input, output, sessionId);
   beginObservedSourceMutation({
     repositoryDir: ctx.repositoryDir,
     sessionId,
     sourceAccessProvenance: ctx.sourceAccessProvenance,
     sourceAccessReason: ctx.sourceAccessReason,
+    sourceContextForPath,
   }, input, output);
   enforceBashToolSafety(ctx, log, input, output, sessionId);
   if (isBashTool(input.tool)) rememberBashOutputPolicy(callID, output.args);
-  enforceReadAndFileQuality(ctx, log, input, output, sessionId);
+  enforceReadAndFileQuality(ctx, log, input, output, sessionId, sourceContextForPath);
 }
 
 function scrubObservedToolOutput(log, toolName, output) {
@@ -338,14 +356,16 @@ function trackObservedToolEffects(ctx, log, toolName, input, output) {
  * @param {object} input - Tool input
  * @param {object} output - Tool output
  */
-function handleToolAfter(ctx, log, scriptsDir, input, output) {
+async function handleToolAfter(ctx, log, scriptsDir, input, output) {
   const toolName = input.tool || "";
   const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
+  const sourceContextForPath = await resolveToolSourceContexts(ctx, input, output, sessionId, true);
 
   finishObservedSourceAccess({
     sessionId,
     sourceAccessProvenance: ctx.sourceAccessProvenance,
     sourceAccessReason: ctx.sourceAccessReason,
+    sourceContextForPath,
   }, input, output, toolCallSucceeded);
 
   // GH#20207 (t2458 Layer 4): scrub credentials from tool output before
@@ -418,6 +438,7 @@ export function createQualityHooks(deps) {
     verifySourceAccessReceipt: deps.verifySourceAccessReceipt,
     sourceAccessBrokerMatches: deps.sourceAccessBrokerMatches,
     sourceAccessRequestRun: deps.sourceAccessRequestRun,
+    sourceAccessRuntime: deps.sourceAccessRuntime,
     resolveSessionModel: typeof deps.resolveSessionModel === "function"
       ? deps.resolveSessionModel
       : () => "",

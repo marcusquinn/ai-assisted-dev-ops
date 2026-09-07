@@ -611,7 +611,8 @@ def _proposal_records(directory: Path) -> list[Path]:
 
 
 def create_source_proposal(
-    config: Config, spec: ManifestRequestSpec, *, issue_snapshot_sha256: str
+    config: Config, spec: ManifestRequestSpec, *, issue_snapshot_sha256: str,
+    context_socket: str | None = None,
 ) -> str:
     """Persist candidate identities, not approval, ownership or liveness evidence."""
     _require_source(type(spec.uid) is int and spec.uid > 0 and os.geteuid() == spec.uid,
@@ -628,6 +629,10 @@ def create_source_proposal(
         "nonce": secrets.token_hex(16), "issue_snapshot_sha256": issue_snapshot_sha256,
         **_proposal_source_snapshot(spec),
     }
+    if context_socket is not None:
+        body["runtime_context"] = query_source_context(
+            context_socket, spec.session_id, body["repository"]["root"], spec.uid,
+        )
     proposal_id = hashlib.sha256(canonical_json(body)).hexdigest()
     record = {"schema": SCHEMA_PROPOSAL, "proposal_id": proposal_id, "state": "pending", "body": body}
     content = canonical_json(record) + b"\n"
@@ -694,6 +699,23 @@ def revalidate_source_proposal_metadata(
         "proposal source or worktree changed; do not silently refresh it",
     )
     return body
+
+
+def revalidate_source_proposal_context(body: dict[str, Any], uid: int) -> dict[str, Any]:
+    """Re-challenge the recorded endpoint; never silently rebind its generation."""
+    recorded = body.get("runtime_context")
+    _require_source(
+        isinstance(recorded, dict) and isinstance(recorded.get("socket_path"), str)
+        and isinstance(body.get("repository"), dict)
+        and isinstance(body["repository"].get("root"), str)
+        and body.get("uid") == uid,
+        "proposal has no actionable runtime context; new explicit context consent is required",
+    )
+    current = query_source_context(
+        recorded["socket_path"], body.get("session_id", ""), body["repository"]["root"], uid,
+    )
+    _require_source(current == recorded, "proposal runtime changed; new explicit context consent is required")
+    return current
 
 
 def withdraw_source_proposal(config: Config, home: Path, proposal_id: str, uid: int) -> None:

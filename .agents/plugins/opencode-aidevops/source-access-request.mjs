@@ -54,13 +54,14 @@ class MutationProvenance {
     this.denialReasons.set(key, reason);
   }
 
-  revalidate(state, sessionId, filePath, reason) {
+  revalidate(state, sessionId, filePath, reason, sourceContext) {
     if (this.now() >= state.expiresAt) return { denial: "expired" };
     let approval = false;
     try {
       approval = this.verify({
         sessionId, filePath, reason, repositoryDir: this.repositoryDir,
         authorizedApprovalId: state.approvalId,
+        sourceContext,
       });
     } catch {
       return { denial: "invalid" };
@@ -86,11 +87,11 @@ class MutationProvenance {
     }
   }
 
-  authorizeRead({ sessionId, callId, filePath, reason, args }) {
+  authorizeRead({ sessionId, callId, filePath, reason, args, sourceContext }) {
     const key = provenanceKey(sessionId, filePath);
     const state = this.approvals.get(key);
     if (!state || !callId) return false;
-    const result = this.revalidate(state, sessionId, filePath, reason);
+    const result = this.revalidate(state, sessionId, filePath, reason, sourceContext);
     if (!result.approval) {
       this.invalidate(key, result.denial);
       return false;
@@ -110,14 +111,26 @@ class MutationProvenance {
     output.metadata = { ...(output.metadata || {}), sourceAccessContinuation: true };
   }
 
-  beginMutation({ sessionId, callId, mutations, reason = this.reason }) {
+  contextPaths(sessionId, input, output, after = false) {
+    if (after) {
+      return (this.pendingMutations.get(operationKey(sessionId, input.callID || "")) || [])
+        .map((entry) => entry.filePath);
+    }
+    if (!isDirectFileMutationTool(input.tool)) return [];
+    return directFileMutations(input.tool, output.args, this.repositoryDir)
+      .map((entry) => entry.filePath)
+      .filter((path) => this.approvals.has(provenanceKey(sessionId, path)));
+  }
+
+  beginMutation({ sessionId, callId, mutations, reason = this.reason, sourceContextForPath }) {
     if (!callId || !Array.isArray(mutations)) return;
     const entries = [];
     for (const mutation of mutations) {
       const key = provenanceKey(sessionId, mutation.filePath);
       const state = this.approvals.get(key);
       if (!state) continue;
-      const result = this.revalidate(state, sessionId, mutation.filePath, reason);
+      const result = this.revalidate(state, sessionId, mutation.filePath, reason,
+        sourceContextForPath?.(mutation.filePath));
       const expectedContent = result.approval && expectedApprovedMutationContent(state, mutation);
       if (!expectedContent) {
         this.invalidate(key, result.denial || "drift");
@@ -134,14 +147,16 @@ class MutationProvenance {
     if (entries.length > 0) this.pendingMutations.set(operationKey(sessionId, callId), entries);
   }
 
-  finishMutation({ sessionId, callId, succeeded, reason = this.reason }) {
+  finishMutation({ sessionId, callId, succeeded, reason = this.reason, sourceContextForPath }) {
     const pendingKey = operationKey(sessionId, callId);
     const entries = this.pendingMutations.get(pendingKey) || [];
     this.pendingMutations.delete(pendingKey);
-    for (const entry of entries) this.finishMutationEntry(entry, sessionId, reason, succeeded);
+    for (const entry of entries) {
+      this.finishMutationEntry(entry, sessionId, reason, succeeded, sourceContextForPath?.(entry.filePath));
+    }
   }
 
-  finishMutationEntry(entry, sessionId, reason, succeeded) {
+  finishMutationEntry(entry, sessionId, reason, succeeded, sourceContext) {
     if (!succeeded) {
       this.invalidate(entry.key, "drift");
       return;
@@ -151,6 +166,7 @@ class MutationProvenance {
       approval = this.verify({
         sessionId, filePath: entry.filePath, reason, repositoryDir: this.repositoryDir,
         authorizedApprovalId: entry.state.approvalId,
+        sourceContext,
       });
     } catch {
       this.invalidate(entry.key, "invalid");
@@ -189,6 +205,7 @@ export function beginObservedSourceMutation(context, input, output) {
     callId: input.callID || "",
     mutations: directFileMutations(input.tool, output.args, context.repositoryDir),
     reason: context.sourceAccessReason,
+    sourceContextForPath: context.sourceContextForPath,
   });
 }
 
@@ -202,6 +219,7 @@ export function finishObservedSourceAccess(context, input, output, classify) {
     callId,
     succeeded,
     reason: context.sourceAccessReason,
+    sourceContextForPath: context.sourceContextForPath,
   });
 }
 

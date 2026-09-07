@@ -645,7 +645,7 @@ test("the loaded verifier accepts only the exact signed receipt", () => {
   }
 });
 
-async function checkSignedManifest(inLinkedWorktree) {
+async function checkSignedManifest(inLinkedWorktree, bound = false) {
   const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
   mkdirSync(tempParent, { recursive: true });
   const root = mkdtempSync(join(tempParent, "source-access-manifest-node-test-"));
@@ -657,6 +657,9 @@ async function checkSignedManifest(inLinkedWorktree) {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const sessionId = "ses_manifest_123456";
   const now = 1_800_000_000;
+  let runtime;
+  let runtimeRoot;
+  const session = { id: sessionId, directory: canonicalRepo, projectID: "fixture", time: { created: 1000 } };
 
   try {
     mkdirSync(canonicalRepo);
@@ -687,7 +690,29 @@ async function checkSignedManifest(inLinkedWorktree) {
       "-q", "-t", "ed25519", "-N", "", "-C", "source-access@aidevops.sh", "-f", key,
     ]);
 
-    const approvalId = createHash("sha256")
+    let proposal;
+    let proposalId;
+    if (bound) {
+      runtimeRoot = mkdtempSync(join(tempParent, "b"));
+      const ownerScripts = join(root, "owner-scripts");
+      mkdirSync(ownerScripts);
+      writeFileSync(join(ownerScripts, "worktree-helper.sh"), '#!/bin/sh\nprintf "VERIFIED\\n"\n', { mode: 0o700 });
+      runtime = createSourceAccessRuntime({ directory: canonicalRepo, scriptsDir: ownerScripts,
+        tempDir: runtimeRoot, client: { session: { get: async () => ({ data: session }) } } });
+      const env = await runtime.environment(sessionId);
+      const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+      const script = 'import runpy,sys,json,os; from pathlib import Path; '
+        + 'c=runpy.run_path(sys.argv[1])["_SOURCE_CORE"]; '
+        + 'cfg=c.Config(request_root=Path(sys.argv[2])); '
+        + 's=c.ManifestRequestSpec(sys.argv[3],os.getuid(),Path.home(),tuple(json.loads(sys.argv[4])),c.OVERRIDABLE_REASON,1800000000); '
+        + 'i=c.create_source_proposal(cfg,s,issue_snapshot_sha256="a"*64,context_socket=sys.argv[5]); '
+        + 'b=c.load_source_proposal(cfg,s.home,i,s.uid); c.revalidate_source_proposal_context(b,s.uid); '
+        + 'print(json.dumps({"id":i,"body":b}))';
+      const result = await promisify(execFile)("python3", ["-I", "-B", "-c", script, helper,
+        join(root, "requests"), sessionId, JSON.stringify(paths), env.AIDEVOPS_SOURCE_CONTEXT_SOCKET], { timeout: 15000 });
+      ({ id: proposalId, body: proposal } = JSON.parse(result.stdout));
+    }
+    const approvalId = bound ? proposalId : createHash("sha256")
       .update([sessionId, String(uid), repo, SOURCE_ACCESS_REASON, ...paths].join("\0"), "utf8")
       .digest("hex");
     const snapshotDir = join(stateDir, "snapshots", String(uid));
@@ -707,7 +732,8 @@ async function checkSignedManifest(inLinkedWorktree) {
       };
     });
     const payload = {
-      schema: "aidevops-source-access-approval/v2",
+      schema: bound ? "aidevops-source-access-approval/v3" : "aidevops-source-access-approval/v2",
+      ...(bound ? { proposal, proposal_id: proposalId, issue_snapshot_sha256: proposal.issue_snapshot_sha256 } : {}),
       approval_id: approvalId,
       request_id: approvalId,
       session_id: sessionId,
@@ -728,7 +754,7 @@ async function checkSignedManifest(inLinkedWorktree) {
     const receiptPath = join(receiptDir, `${approvalId}.json`);
     writeFileSync(
       receiptPath,
-      JSON.stringify({ schema: "aidevops-source-access-receipt/v2", payload, signature }),
+      JSON.stringify({ schema: bound ? "aidevops-source-access-receipt/v3" : "aidevops-source-access-receipt/v2", payload, signature }),
       { mode: 0o644 },
     );
     const baseArgs = {
@@ -740,6 +766,7 @@ async function checkSignedManifest(inLinkedWorktree) {
       trustUid: uid,
       stateDir,
       publicKeyPath: `${key}.pub`,
+      sourceContext: bound ? await runtime.resolve(sessionId, repo) : undefined,
     };
     const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "scripts");
     const logsDir = join(root, "logs");
@@ -750,6 +777,7 @@ async function checkSignedManifest(inLinkedWorktree) {
       repositoryDir: canonicalRepo,
       verifySourceAccessReceipt: (options) => verifySourceAccessReceipt({ ...baseArgs, ...options }),
       sourceAccessBrokerMatches: () => true,
+      sourceAccessRuntime: runtime,
       sourceAccessRequestRun: () => {
         throw new Error("an exact signed manifest must not generate a per-path request");
       },
@@ -761,6 +789,41 @@ async function checkSignedManifest(inLinkedWorktree) {
       const output = { args: { filePath } };
       await hooks.toolExecuteBefore({ tool: "read", sessionID: sessionId, callID: filePath }, output);
       assert.equal(output.args.filePath, approval.approvedPath);
+    }
+    if (bound) {
+      for (const [field, value] of [["runtime_instance_id", "f".repeat(32)], ["runtime_pid", process.pid + 1],
+        ["session_created_at", 2000], ["project_id", "other"]]) {
+        assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0],
+          sourceContext: { ...baseArgs.sourceContext, [field]: value } }), false, field);
+      }
+      assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0], sourceContext: undefined }), false);
+      session.time.created = 2000;
+      await assert.rejects(hooks.toolExecuteBefore({ tool: "read", sessionID: sessionId, callID: "new-generation" },
+        { args: { filePath: paths[0] } }), /secret-read-guard/);
+      const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+      const recheck = 'import runpy,sys,json,os; c=runpy.run_path(sys.argv[1])["_SOURCE_CORE"]; '
+        + 'c.revalidate_source_proposal_context(json.loads(sys.argv[2]),os.getuid())';
+      await assert.rejects(promisify(execFile)("python3", ["-I", "-B", "-c", recheck,
+        helper, JSON.stringify(proposal)], { timeout: 10000 }), /proposal runtime changed/);
+      session.time.created = 1000;
+      const provenance = createSourceAccessMutationProvenance({ repositoryDir: canonicalRepo,
+        now: () => now + 1, verify: (options) => verifySourceAccessReceipt({ ...baseArgs, ...options }) });
+      provenance.rememberApproval({ sessionId, filePath: paths[0],
+        approval: verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }) });
+      const before = await runtime.resolve(sessionId, repo);
+      provenance.beginMutation({ sessionId, callId: "bound-write", sourceContextForPath: () => before,
+        mutations: [{ filePath: paths[0], kind: "write", content: "observed update\n" }] });
+      writeFileSync(paths[0], "observed update\n");
+      const after = await runtime.resolve(sessionId, repo);
+      provenance.finishMutation({ sessionId, callId: "bound-write", succeeded: true, sourceContextForPath: () => after });
+      const read = { sessionId, callId: "bound-read", filePath: paths[0], reason: SOURCE_ACCESS_REASON,
+        args: { filePath: paths[0] }, sourceContext: await runtime.resolve(sessionId, repo) };
+      assert.ok(provenance.authorizeRead(read));
+      const output = { output: "original snapshot" };
+      provenance.finishRead(sessionId, "bound-read", output, true);
+      assert.equal(output.output, "observed update\n");
+      assert.equal(provenance.authorizeRead({ ...read, callId: "no-context", sourceContext: undefined }), false);
+      writeFileSync(paths[0], "source-0\n");
     }
     if (inLinkedWorktree) {
       const sibling = join(root, "unapproved-sibling");
@@ -799,12 +862,15 @@ async function checkSignedManifest(inLinkedWorktree) {
     rmSync(receiptPath);
     assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }), false);
   } finally {
+    runtime?.close();
+    if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 test("one signed manifest authorizes only three exact repository-bound paths", () => checkSignedManifest(false));
 test("a canonical app context consumes its exact linked-worktree manifest without per-path requests", () => checkSignedManifest(true));
+test("a V3 manifest binds native proposal context to the consuming runtime and fresh session generation", () => checkSignedManifest(true, true));
 
 test("one approval survives verified Write, Edit, and apply_patch cycles", () => {
   const fixture = mutationFixture();

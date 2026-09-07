@@ -342,6 +342,7 @@ function validatedReceipt(options) {
     return validatedSingleReceipt(options);
   } catch {
     return validatedManifestReceipt(options, {
+      canonicalReceiptPayload,
       fileSha256,
       hasSymlinkComponent,
       receiptNames: (approvalsDir) =>
@@ -455,6 +456,7 @@ export function checkSecretReadWithApproval({
   requestRun = execFileSync,
   callId = "",
   provenance,
+  sourceContext,
 }) {
   const filePath = readPath(args);
   // Fail closed before tool-name classification. OpenCode hook identities can
@@ -477,10 +479,10 @@ export function checkSecretReadWithApproval({
 
   const brokerCurrent = brokerMatchesCurrentRelease(brokerMatches, scriptsDir);
   const continuedApproval = brokerCurrent
-    ? provenance?.authorizeRead({ sessionId, callId, filePath, reason, args })
+    ? provenance?.authorizeRead({ sessionId, callId, filePath, reason, args, sourceContext })
     : false;
   const approval = continuedApproval || (brokerCurrent
-    ? verify({ sessionId, filePath, reason, repositoryDir })
+    ? verify({ sessionId, filePath, reason, repositoryDir, sourceContext })
     : false);
   if (applyApprovedRead(args, approval, filePath, log)) {
     if (!continuedApproval) provenance?.rememberApproval({ sessionId, filePath, approval });

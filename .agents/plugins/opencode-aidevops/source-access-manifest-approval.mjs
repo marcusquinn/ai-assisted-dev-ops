@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { BOUND_RECEIPT_SCHEMA, BOUND_PAYLOAD_SCHEMA, boundManifestIdentity } from "./source-access-bound-manifest.mjs";
 
 const MANIFEST_RECEIPT_SCHEMA = "aidevops-source-access-receipt/v2";
 const MANIFEST_PAYLOAD_SCHEMA = "aidevops-source-access-approval/v2";
@@ -166,19 +167,20 @@ function validateManifestReceipt(receiptName, context) {
   context.requireValidReceipt(context.trustedRegularFile(receiptPath, context.trustUid));
   const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
   const payload = receipt?.payload;
-  context.requireValidReceipt(receipt?.schema === MANIFEST_RECEIPT_SCHEMA);
-  context.requireValidReceipt(payload?.schema === MANIFEST_PAYLOAD_SCHEMA);
+  const bound = receipt?.schema === BOUND_RECEIPT_SCHEMA;
+  context.requireValidReceipt(bound || receipt?.schema === MANIFEST_RECEIPT_SCHEMA);
+  context.requireValidReceipt(payload?.schema === (bound ? BOUND_PAYLOAD_SCHEMA : MANIFEST_PAYLOAD_SCHEMA));
   context.requireValidReceipt(payload.session_id === context.sessionId);
   context.requireValidReceipt(payload.uid === context.uid);
   context.requireValidReceipt(payload.reason === context.reason);
   context.requireValidReceipt(
     Array.isArray(payload.entries) &&
-      payload.entries.length >= 2 &&
+      payload.entries.length >= (bound ? 1 : 2) &&
       payload.entries.length <= MAX_MANIFEST_ENTRIES,
   );
   const entries = normalizedEntries(payload, context);
   const paths = validateEntryOrder(entries, context.requireValidReceipt);
-  const approvalId = manifestScopeId(
+  const approvalId = bound ? boundManifestIdentity(payload, context) : manifestScopeId(
     context.sessionId,
     context.uid,
     context.requestedIdentity.repoRoot,
@@ -235,6 +237,7 @@ export function validatedManifestReceipt(options, dependencies) {
     gitRun = execFileSync,
     run = execFileSync,
     authorizedApprovalId = "",
+    sourceContext,
   } = options;
   const { requireValidReceipt } = dependencies;
   requireValidReceipt(/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId));
@@ -254,6 +257,7 @@ export function validatedManifestReceipt(options, dependencies) {
     ...dependencies,
     approvalsDir,
     authorizedApprovalId,
+    sourceContext,
     canonicalPath,
     git,
     gitRun,
