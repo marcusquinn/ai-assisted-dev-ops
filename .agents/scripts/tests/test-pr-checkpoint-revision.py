@@ -241,6 +241,26 @@ class ProgressTests(unittest.TestCase):
         queue._run_gh_json = lambda args: None
         self.assertIsNone(queue._durable_progress_age("owner/repo", issue, now))
 
+    def test_open_linked_pr_preserves_owned_progress(self):
+        now = dt.datetime.fromisoformat("2026-09-05T13:00:00+00:00")
+        issue = {"number": 123, "createdAt": "2026-09-05T10:00:00Z", "labels": []}
+
+        def run_gh(args):
+            if args[1:3] == ["api", "repos/owner/repo/issues/123/timeline?per_page=100"]:
+                return [{"event": "cross-referenced", "source": {"issue": {
+                    "number": 42, "pull_request": {"url": "https://example.invalid/pr/42"},
+                    "repository_url": "https://api.github.com/repos/owner/repo"}}}]
+            if args[1:3] == ["pr", "view"]:
+                return {"state": "OPEN", "createdAt": "2026-09-05T10:30:00Z",
+                        "commits": [], "statusCheckRollup": []}
+            return None
+
+        queue._run_gh_json = run_gh
+        aggregate = queue._empty_aggregate()
+        queue._count_durable_progress(aggregate, "owner/repo", issue, now)
+        self.assertEqual(aggregate["no_durable_progress_hour"], 0)
+        self.assertEqual(aggregate["oldest_durable_progress_age_min"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

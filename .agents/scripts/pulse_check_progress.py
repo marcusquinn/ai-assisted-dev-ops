@@ -48,9 +48,14 @@ def pr_progress_age(slug, number, now, run_gh):
     if not isinstance(number, int) or number <= 0:
         return None
     pr = run_gh(["gh", "pr", "view", str(number), "--repo", slug,
-                 "--json", "createdAt,commits,statusCheckRollup"])
+                 "--json", "createdAt,commits,statusCheckRollup,state"])
     if not isinstance(pr, dict):
         return None
+    # A linked open PR is an owned durable checkpoint. Its age may warrant
+    # review elsewhere, but it must not cause the queue scanner to recommend a
+    # replacement dispatch or stale-owner recovery.
+    if pr.get("state") == "OPEN":
+        return 0
     ages = [age for value in pr_progress_times(pr) if (age := age_at(value, now)) is not None]
     return min(ages) if ages else None
 
