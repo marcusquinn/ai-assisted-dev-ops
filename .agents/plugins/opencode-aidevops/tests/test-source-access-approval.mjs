@@ -31,6 +31,8 @@ import {
   verifySourceAccessReceipt,
 } from "../source-access-approval.mjs";
 import { createQualityHooks } from "../quality-hooks.mjs";
+import { createSourceAccessRuntime } from "../source-access-runtime.mjs";
+import { createShellEnvHook } from "../shell-env.mjs";
 import {
   createSourceContextResponder,
   listenSourceContext,
@@ -152,6 +154,66 @@ test("Python context probe uses kernel peer identity rather than a claimed PID",
   } finally {
     chmodSync(root, 0o700);
     listener?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime adapter uses fresh V1 SDK lookup, exact linked ownership and private lazy transport", async () => {
+  const parent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(join(parent, "r"));
+  const repo = join(root, "repo");
+  const worktree = join(root, "wt");
+  const scripts = join(root, "scripts");
+  mkdirSync(scripts);
+  execFileSync("git", ["init", "-q", repo]);
+  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    "commit", "--allow-empty", "-qm", "fixture"]);
+  execFileSync("git", ["-C", repo, "worktree", "add", "--detach", worktree], { stdio: "ignore" });
+  const session = { id: "ses_runtime_fixture", projectID: "fixture", directory: repo, time: { created: 1000 } };
+  const ownerHelper = join(scripts, "worktree-helper.sh");
+  writeFileSync(ownerHelper, '#!/bin/sh\n[ "$1" = registry ] && [ "$2" = verify-owner ] && '
+    + '[ "$4" = ses_runtime_fixture ] || exit 1\nprintf "VERIFIED\\n"\n', { mode: 0o700 });
+  let present = true;
+  let lookups = 0;
+  const runtime = createSourceAccessRuntime({ directory: repo, scriptsDir: scripts, tempDir: root,
+    client: { session: { get: async (options) => {
+      lookups++;
+      assert.deepEqual(options.path, { id: session.id });
+      assert.deepEqual(options.query, { directory: repo });
+      assert.ok(options.signal instanceof AbortSignal);
+      return present ? { data: session } : { error: { message: "private SDK error" } };
+    } } },
+  });
+  try {
+    const first = await runtime.resolve(session.id, worktree);
+    assert.equal(first?.runtime_instance_id, sourceContextInstanceId);
+    assert.equal(first?.repo_root, worktree);
+    assert.equal(first?.authority, "none");
+    assert.equal(await runtime.resolve(session.id, repo), undefined, "canonical checkout is not an implementation worktree");
+    const shell = createShellEnvHook({ sourceAccessRuntime: runtime });
+    const output = { env: { AIDEVOPS_SOURCE_CONTEXT_SOCKET: "inherited-forgery" } };
+    await shell({ sessionID: session.id, cwd: repo }, output);
+    const socketPath = output.env.AIDEVOPS_SOURCE_CONTEXT_SOCKET;
+    assert.ok(socketPath && socketPath !== "inherited-forgery");
+    const query = { schema: SOURCE_CONTEXT_QUERY, nonce: "a".repeat(64),
+      session_id: session.id, repo_root: worktree };
+    assert.equal((await contextRoundTrip(socketPath, query)).session_created_at, 1000);
+    present = false;
+    assert.equal(await runtime.resolve(session.id, worktree), undefined);
+    assert.deepEqual(await contextRoundTrip(socketPath, query), { error: "context unavailable" });
+    present = true;
+    writeFileSync(ownerHelper, "#!/bin/sh\nexit 1\n");
+    assert.equal(await runtime.resolve(session.id, worktree), undefined, "lost owner never uses cached success");
+    assert.equal(lookups, 6);
+    runtime.handleEvent({ event: { type: "server.instance.disposed", properties: { directory: repo } } });
+    assert.equal(await runtime.resolve(session.id, worktree), undefined);
+    assert.deepEqual(await runtime.environment(session.id), {
+      AIDEVOPS_SOURCE_CONTEXT_SOCKET: "", AIDEVOPS_SOURCE_CONTEXT_INSTANCE: "",
+    });
+    await assert.rejects(contextRoundTrip(socketPath, query));
+  } finally {
+    runtime.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

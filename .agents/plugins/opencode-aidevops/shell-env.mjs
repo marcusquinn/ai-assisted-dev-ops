@@ -250,12 +250,14 @@ function normalizeDependencies(deps) {
     workspaceDir = "",
     version,
     onSessionIdentity,
+    sourceAccessRuntime,
   } = deps || {};
   return {
     activeAgentsDir,
     agentsDir,
     scriptsDir,
     workspaceDir,
+    sourceAccessRuntime,
     precomputedVersion: typeof version === "string" ? version.trim() : "",
     onSessionIdentity: typeof onSessionIdentity === "function" ? onSessionIdentity : () => {},
   };
@@ -266,6 +268,9 @@ async function shellEnvHook(config, input, output) {
   projectFrameworkEnvironment(output.env, config);
   projectSessionIdentity(input, output.env, config.onSessionIdentity);
   projectOtelEnvironment(output.env);
+  if (config.sourceAccessRuntime) {
+    Object.assign(output.env, await config.sourceAccessRuntime.environment(getSessionId(input)));
+  }
 }
 
 /**

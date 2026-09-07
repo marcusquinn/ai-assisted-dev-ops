@@ -35,6 +35,7 @@ import { adaptToolDefinition } from "./tool-definition.mjs";
 import { createMcpSessionRuntime, getOnDemandMcpAgents } from "./mcp-registry.mjs";
 import { enforceManagedMcpArtifactPath } from "./mcp-activation-tool.mjs";
 import { createQualityHooks } from "./quality-hooks.mjs";
+import { createSourceAccessRuntime } from "./source-access-runtime.mjs";
 import {
   createSessionModelStore,
   createShellEnvHook,
@@ -426,6 +427,10 @@ export async function AidevopsPlugin({ directory, client }) {
     checkpointHelper: join(SCRIPTS_DIR, "session-checkpoint-helper.sh"),
   });
   const sessionModels = createSessionModelStore();
+  const sourceAccessRuntime = createSourceAccessRuntime({
+    client, directory, scriptsDir: SCRIPTS_DIR,
+    tempDir: join(WORKSPACE_DIR, "tmp"), enabled: !isHeadless(),
+  });
   const { toolExecuteBefore, toolExecuteAfter, qualityLog } = createQualityHooks({
     activeScriptsDir: join(ACTIVE_AGENTS_DIR, "scripts"),
     scriptsDir: SCRIPTS_DIR,
@@ -440,6 +445,7 @@ export async function AidevopsPlugin({ directory, client }) {
     agentsDir: AGENTS_DIR,
     scriptsDir: SCRIPTS_DIR,
     workspaceDir: WORKSPACE_DIR,
+    sourceAccessRuntime,
     onSessionIdentity: (sessionId, modelId) => sessionModels.remember(sessionId, modelId),
   });
   const tierReasoning = Object.fromEntries(
@@ -664,6 +670,7 @@ export async function AidevopsPlugin({ directory, client }) {
         compactionContinuation.handleEvent(input),
         Promise.resolve(cancellationReceipt.handleEvent(input)),
         Promise.resolve(boundedOperationManager.handleEvent(input)),
+        Promise.resolve(sourceAccessRuntime.handleEvent(input)),
         permissionBroker.handleEvent(input).catch((err) => debugEventError("permission broker", err)),
         sessionTitleStatusHandler(input).catch((err) => debugEventError("title status handler", err)),
         routingFeedbackHandler(input).catch((err) => debugEventError("routing feedback handler", err)),

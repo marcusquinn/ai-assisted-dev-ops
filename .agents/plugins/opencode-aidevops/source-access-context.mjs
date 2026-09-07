@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Marcus Quinn
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
 
@@ -53,20 +53,35 @@ export function createSourceContextResponder({ lookupSession, verifyOwner, sameR
   };
 }
 
-function privateSocketDirectory(directory) {
-  if (!isAbsolute(directory) || process.getuid() === 0) return false;
+function privateSocketDirectory(directory, privateLeaf = true) {
+  if (!isAbsolute(directory) || process.getuid() === 0
+    || process.geteuid() !== process.getuid()) return false;
   let current = directory;
   while (true) {
     const metadata = lstatSync(current);
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) return false;
     if (![0, process.getuid()].includes(metadata.uid) || (metadata.mode & 0o022)) return false;
-    if (current === directory && (metadata.uid !== process.getuid() || (metadata.mode & 0o077))) {
+    if (privateLeaf && current === directory
+      && (metadata.uid !== process.getuid() || (metadata.mode & 0o077))) {
       return false;
     }
     const parent = dirname(current);
     if (parent === current) return true;
     current = parent;
   }
+}
+
+/** Create only the reserved leaf under an existing, safe workspace temp root. */
+export function prepareSourceContextDirectory(parent) {
+  if (!privateSocketDirectory(parent, false)) throw new Error("unsafe source context parent");
+  const directory = join(parent, "source-context");
+  try {
+    mkdirSync(directory, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  if (!privateSocketDirectory(directory)) throw new Error("unsafe source context directory");
+  return directory;
 }
 
 function acceptContextQuery(connection, respond, state) {
