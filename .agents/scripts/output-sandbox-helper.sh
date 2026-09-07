@@ -322,7 +322,7 @@ is_toolchain_compaction_candidate() {
 
 is_script_compaction_candidate() {
 	local command_text="$1"
-	local pattern='(^|/)(linters-local\.sh)( |$)|^bash [^[:space:]]*(test|lint)[^[:space:]]*\.sh( |$)'
+	local pattern='(^|/)(linters-local\.sh)( |$)|(^|/)(worker-activity-helper\.sh) summary( |$)|^bash [^[:space:]]*(test|lint)[^[:space:]]*\.sh( |$)'
 	[[ "$command_text" =~ $pattern ]]
 	return $?
 }

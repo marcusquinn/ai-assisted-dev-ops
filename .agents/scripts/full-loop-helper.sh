@@ -331,6 +331,14 @@ _run_foreground() {
 main() {
 	local command="${1:-help}"
 	shift || true
+	# Command help is an introspection request, not an operation. Handle it
+	# before dispatch so probes such as `start --help` cannot create loop state.
+	case "${1:-}" in
+	help | --help | -h)
+		show_help
+		return 0
+		;;
+	esac
 	case "$command" in
 	start) cmd_start "$@" ;; resume) cmd_resume ;; status) cmd_status "$@" ;;
 	cancel) cmd_cancel ;; logs) cmd_logs "$@" ;; _run_foreground) _run_foreground "$@" ;;
@@ -348,7 +356,7 @@ main() {
 	help | --help | -h) show_help ;;
 	*)
 		print_error "Unknown command: $command"
-		show_help
+		printf 'Run full-loop-helper.sh help for supported commands.\n' >&2
 		return 1
 		;;
 	esac
