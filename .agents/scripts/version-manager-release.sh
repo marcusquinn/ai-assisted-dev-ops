@@ -769,6 +769,38 @@ _verify_release_deployment_source_unchanged() {
 	return 0
 }
 
+_verify_release_descendant_active_source() {
+	local sync_repo_root="$1"
+	local release_sha="$2"
+	local active_sha="$3"
+	local release_tree=""
+	local active_tree=""
+	local protected_main=""
+
+	release_tree=$(git -C "$sync_repo_root" rev-parse "${release_sha}^{tree}" 2>/dev/null) || {
+		print_error "Post-release deployment gate cannot resolve the release tree"
+		return 1
+	}
+	active_tree=$(git -C "$sync_repo_root" rev-parse "${active_sha}^{tree}" 2>/dev/null) || {
+		print_error "Post-release deployment gate cannot resolve the active bundle tree"
+		return 1
+	}
+	[[ "$release_tree" != "$active_tree" ]] || return 0
+	if ! git -C "$sync_repo_root" fetch origin main --quiet; then
+		print_error "Post-release deployment gate cannot refresh protected main for active descendant verification"
+		return 1
+	fi
+	protected_main=$(git -C "$sync_repo_root" rev-parse "origin/main^{commit}" 2>/dev/null) || {
+		print_error "Post-release deployment gate cannot resolve protected main for active descendant verification"
+		return 1
+	}
+	if [[ "$active_sha" != "$protected_main" ]]; then
+		print_error "Post-release deployment gate rejected active descendant ${active_sha:0:12}: changed tree does not match protected main ${protected_main:0:12}"
+		return 1
+	fi
+	return 0
+}
+
 _verify_active_release_preservation_merge() {
 	local sync_repo_root="$1"
 	local release_sha="$2"
@@ -778,8 +810,6 @@ _verify_active_release_preservation_merge() {
 	local manifest_status=""
 	local manifest_sha=""
 	local active_sha=""
-	local release_tree=""
-	local active_tree=""
 	local verify_base=""
 	local verify_root=""
 	local verify_repo=""
@@ -816,19 +846,8 @@ _verify_active_release_preservation_merge() {
 			print_error "Post-release deployment gate rejected active source ${active_sha:0:12}: it is neither ancestry-related nor a lane-authorized squash-integrated source"
 			return 1
 		fi
-	else
-		release_tree=$(git -C "$sync_repo_root" rev-parse "${release_sha}^{tree}" 2>/dev/null) || {
-			print_error "Post-release deployment gate cannot resolve the release tree"
-			return 1
-		}
-		active_tree=$(git -C "$sync_repo_root" rev-parse "${active_sha}^{tree}" 2>/dev/null) || {
-			print_error "Post-release deployment gate cannot resolve the active bundle tree"
-			return 1
-		}
-		if [[ "$release_tree" != "$active_tree" ]]; then
-			print_error "Post-release deployment gate rejected active descendant ${active_sha:0:12}: its tree differs from release ${release_sha:0:12}"
-			return 1
-		fi
+	elif ! _verify_release_descendant_active_source "$sync_repo_root" "$release_sha" "$active_sha"; then
+		return 1
 	fi
 
 	verify_base="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"

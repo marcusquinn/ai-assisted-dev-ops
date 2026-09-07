@@ -141,6 +141,14 @@ silently widened. Conflicting source SHAs, stale owner tokens, mismatched pins,
 publication state and uncertain reads fail closed. This migration changes neither
 signed tags nor an established snapshot range and adds no publication authority.
 
+Post-release runtime convergence preserves a changed-tree descendant of the
+immutable release commit only when its full manifest SHA exactly equals the
+freshly fetched protected `main` tip and the existing bundle verifier proves the
+deployed files, sentinel and deployment stamp match that commit. This covers a
+protected release merge that combines the pinned release with later ordinary
+merges without downgrading the active runtime. A stale descendant, fetch failure,
+concurrent replacement or unrelated history remains a hard failure.
+
 ## Verification
 
 Run from the repository root:
