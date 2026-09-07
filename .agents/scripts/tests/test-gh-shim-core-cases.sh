@@ -271,6 +271,74 @@ else
 fi
 
 _reset_log
+pr_partial_url="https://github.com/owner/repo/pull/31503"
+pr_partial_output=""
+pr_partial_rc=0
+pr_partial_output=$(STUB_GH_PERMISSION=read STUB_PR_CREATE_EXIT_CODE=1 \
+	STUB_PR_CREATE_STDOUT="$pr_partial_url" \
+	STUB_PR_CREATE_STDERR='pull request update failed: GraphQL: permission denied (updatePullRequest)' \
+	"$SHIM_RUN" pr create --repo owner/repo --head contributor:feature/raw-partial \
+	--title "partial" --body "For #31509" 2>"$TMP/pr-create-partial.err") || pr_partial_rc=$?
+argv=$(_read_argv)
+pr_partial_create_calls=$(grep -c $'^pr\tcreate$' "$STUB_GH_CALL_LOG" || true)
+if [[ "$pr_partial_rc" -eq 78 && "$pr_partial_output" == "$pr_partial_url" ]] &&
+	[[ "$argv" != *"origin:interactive"* && "$pr_partial_create_calls" -eq 1 ]] &&
+	grep -q '\[aidevops\]\[gh-shim\]\[PARTIAL\].*not retrying creation' "$TMP/pr-create-partial.err"; then
+	_pass "external raw pr create preserves durable URL and reports stable partial success"
+else
+	_fail "external raw pr create partial-success recovery" \
+		"rc=${pr_partial_rc} output=${pr_partial_output} argv=${argv} err=$(cat "$TMP/pr-create-partial.err")"
+fi
+
+_reset_log
+pr_recovered_url="https://github.com/owner/repo/pull/31509"
+pr_recovered_output=""
+pr_recovered_rc=0
+pr_recovery_fixture="$TMP/pr-recovery.json"
+printf '%s\n' '[{"number":31509,"state":"open","html_url":"https://github.com/owner/repo/pull/31509","head":{"label":"contributor:feature/recover"},"base":{"repo":{"full_name":"owner/repo"}}}]' \
+	>"$pr_recovery_fixture"
+export STUB_REST_PULLS_FILE="$pr_recovery_fixture"
+pr_recovered_output=$(STUB_GH_PERMISSION=read STUB_PR_CREATE_EXIT_CODE=1 \
+	STUB_PR_CREATE_STDERR='pull request update failed' \
+	"$SHIM_RUN" pr create --repo owner/repo --head contributor:feature/recover \
+	--title "recover" --body "For #31509" 2>"$TMP/pr-create-recover.err") || pr_recovered_rc=$?
+if [[ "$pr_recovered_rc" -eq 78 && "$pr_recovered_output" == "$pr_recovered_url" ]] &&
+	grep -Fq 'head=contributor:feature/recover' "$STUB_GH_LOG"; then
+	_pass "raw pr create recovers one exact upstream and qualified-head identity"
+else
+	_fail "raw pr create exact identity recovery" \
+		"rc=${pr_recovered_rc} output=${pr_recovered_output} calls=$(cat "$STUB_GH_CALL_LOG")"
+fi
+
+_reset_log
+printf '%s\n' '[{"number":31510,"state":"open","html_url":"https://github.com/owner/repo/pull/31510","head":{"label":"other:feature/recover"},"base":{"repo":{"full_name":"owner/repo"}}}]' \
+	>"$pr_recovery_fixture"
+export STUB_REST_PULLS_FILE="$pr_recovery_fixture"
+pr_wrong_head_rc=0
+STUB_GH_PERMISSION_FAIL=1 STUB_PR_CREATE_EXIT_CODE=41 \
+	"$SHIM_RUN" pr create --repo owner/repo --head contributor:feature/recover \
+	--title "wrong head" --body "For #31509" >/dev/null 2>"$TMP/pr-create-wrong-head.err" || pr_wrong_head_rc=$?
+if [[ "$pr_wrong_head_rc" -eq 41 ]] &&
+	! grep -q '\[aidevops\]\[gh-shim\]\[PARTIAL\]' "$TMP/pr-create-wrong-head.err"; then
+	_pass "raw pr create rejects wrong-fork identity and unavailable authority"
+else
+	_fail "raw pr create wrong-fork recovery guard" "rc=${pr_wrong_head_rc} err=$(cat "$TMP/pr-create-wrong-head.err")"
+fi
+
+_reset_log
+pr_lookup_failure_rc=0
+STUB_GH_PERMISSION=read STUB_PR_CREATE_EXIT_CODE=42 STUB_REST_READ_FAIL=1 \
+	"$SHIM_RUN" pr create --repo owner/repo --head contributor:feature/recover \
+	--title "lookup failure" --body "For #31509" >/dev/null 2>"$TMP/pr-create-lookup-failure.err" || pr_lookup_failure_rc=$?
+if [[ "$pr_lookup_failure_rc" -eq 42 ]] &&
+	! grep -q '\[aidevops\]\[gh-shim\]\[PARTIAL\]' "$TMP/pr-create-lookup-failure.err"; then
+	_pass "raw pr create preserves failure when durable identity lookup is unavailable"
+else
+	_fail "raw pr create unavailable identity guard" \
+		"rc=${pr_lookup_failure_rc} err=$(cat "$TMP/pr-create-lookup-failure.err")"
+fi
+
+_reset_log
 AIDEVOPS_HEADLESS=1 AIDEVOPS_USER_INSTIGATED_EXTERNAL_GH_WRITE=owner/repo \
 	"$SHIM_RUN" pr create --repo owner/repo --title "worker" --body "For #25901" 2>/dev/null
 argv=$(_read_argv)

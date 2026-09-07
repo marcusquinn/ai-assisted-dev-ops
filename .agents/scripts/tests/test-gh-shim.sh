@@ -82,7 +82,7 @@ if [[ "$1" == "api" && "$2" == "user" ]]; then
 fi
 if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/collaborators/[^/]+/permission$ ]]; then
 	[[ "${STUB_GH_PERMISSION_FAIL:-0}" != "1" ]] || exit 44
-	printf '%s\n' "${STUB_GH_PERMISSION:-none}"
+	printf '%s\n' "${STUB_GH_PERMISSION:-write}"
 	exit 0
 fi
 if [[ "$1" == "auth" && "$2" == "token" ]]; then
@@ -91,6 +91,11 @@ if [[ "$1" == "auth" && "$2" == "token" ]]; then
 fi
 if [[ -n "${STUB_GH_CALL_LOG:-}" ]]; then
 	printf '%s\t%s\n' "${1:-}" "${2:-}" >>"$STUB_GH_CALL_LOG"
+fi
+if [[ "$1" == "pr" && "$2" == "create" && -n "${STUB_PR_CREATE_EXIT_CODE:-}" ]]; then
+	[[ -z "${STUB_PR_CREATE_STDOUT:-}" ]] || printf '%s\n' "$STUB_PR_CREATE_STDOUT"
+	[[ -z "${STUB_PR_CREATE_STDERR:-}" ]] || printf '%s\n' "$STUB_PR_CREATE_STDERR" >&2
+	exit "$STUB_PR_CREATE_EXIT_CODE"
 fi
 if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/labels\?per_page=100$ ]]; then
 	[[ "${STUB_MANAGED_LABEL_INVENTORY_FAIL:-0}" != "1" ]] || exit 42
@@ -205,7 +210,7 @@ if [[ "${STUB_REST_READ_FAIL:-0}" == "1" && "$1" == "api" && \
 	"$2" =~ ^/repos/[^/]+/[^/]+/(issues|pulls)(\?|/|$) ]]; then
 	exit "${STUB_REST_READ_EXIT_CODE:-42}"
 fi
-if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/pulls\? ]]; then
+if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/pulls(\?|$) ]]; then
 	jq_filter=""
 	i=3
 	while [[ $i -le $# ]]; do
@@ -216,7 +221,11 @@ if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/pulls\? ]]; then
 		fi
 		i=$((i + 1))
 	done
-	fixture='[{"number":22337,"state":"open","merged_at":null,"html_url":"https://github.com/owner/repo/pull/22337"},{"number":22343,"state":"open","merged_at":null,"html_url":"https://github.com/owner/repo/pull/22343"}]'
+	if [[ -n "${STUB_REST_PULLS_FILE:-}" ]]; then
+		fixture=$(<"$STUB_REST_PULLS_FILE")
+	else
+		fixture='[{"number":22337,"state":"open","merged_at":null,"html_url":"https://github.com/owner/repo/pull/22337"},{"number":22343,"state":"open","merged_at":null,"html_url":"https://github.com/owner/repo/pull/22343"}]'
+	fi
 	if [[ "$2" == *"head=owner%3Afeature%2Fauto-20260502-135611-gh22289"* ]]; then
 		fixture='[{"number":22337,"state":"open","merged_at":null,"html_url":"https://github.com/owner/repo/pull/22337"}]'
 	fi
@@ -350,6 +359,10 @@ _reset_log() {
 	unset STUB_MANAGED_LABEL_CREATE_FAIL
 	unset STUB_GH_PERMISSION
 	unset STUB_GH_PERMISSION_FAIL
+	unset STUB_PR_CREATE_EXIT_CODE
+	unset STUB_PR_CREATE_STDOUT
+	unset STUB_PR_CREATE_STDERR
+	unset STUB_REST_PULLS_FILE
 	return 0
 }
 

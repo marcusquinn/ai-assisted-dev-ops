@@ -14,6 +14,9 @@ _GH_WRITE_POLICY_LIB_LOADED=1
 _SHIM_ORIGIN_INTERACTIVE_LABEL="origin:interactive"
 _SHIM_ISSUE_FIRST_SCOPE_EXTERNAL="external"
 _SHIM_MANAGED_LABEL_SET=""
+_SHIM_REPO_WRITE_CACHE_SLUG=""
+_SHIM_REPO_WRITE_CACHE_RESULT=""
+_SHIM_PR_CREATE_PARTIAL_RC=78
 
 if [[ -z "${_SHIM_DIR:-}" ]]; then
 	_gh_write_policy_path="${BASH_SOURCE[0]%/*}"
@@ -764,9 +767,118 @@ _shim_normalize_pr_create_origin() {
 	if _shim_is_headless_automation; then
 		origin_label="origin:worker"
 	fi
+	local repo_slug=""
+	repo_slug=$(_shim_target_repo_slug "${_modified_args[@]}" 2>/dev/null || true)
+	if [[ -z "$repo_slug" ]] || ! _shim_authenticated_actor_has_repo_write "$repo_slug"; then
+		printf '[aidevops][gh-shim][INFO] Upstream write authority is unavailable; deferring automatic %s provenance to repository triage.\n' \
+			"$origin_label" >&2
+		return 0
+	fi
 	_SHIM_MANAGED_LABEL_SET="origin"
 	_modified_args+=(--label "$origin_label")
 	return 0
+}
+
+_shim_pr_create_get_head() {
+	local args=("$@")
+	local idx=0
+	local arg=""
+	while [[ $idx -lt ${#args[@]} ]]; do
+		arg="${args[$idx]}"
+		case "$arg" in
+		--head)
+			printf '%s\n' "${args[idx + 1]:-}"
+			return 0
+			;;
+		--head=*)
+			printf '%s\n' "${arg#--head=}"
+			return 0
+			;;
+		esac
+		idx=$((idx + 1))
+	done
+	return 1
+}
+
+_shim_pr_create_validate_url() {
+	local url="$1"
+	local repo_slug="$2"
+	if [[ "$url" =~ ^https://[^/]+/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]] &&
+		[[ "${BASH_REMATCH[1]}" == "$repo_slug" ]]; then
+		printf '%s\n' "$url"
+		return 0
+	fi
+	return 1
+}
+
+_shim_pr_create_url_from_output() {
+	local output_file="$1"
+	local repo_slug="$2"
+	local line=""
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if _shim_pr_create_validate_url "$line" "$repo_slug"; then
+			return 0
+		fi
+	done <"$output_file"
+	return 1
+}
+
+_shim_pr_create_recover_exact_url() {
+	local repo_slug="$1"
+	shift
+	local head_ref=""
+	local response=""
+	local recovered_url=""
+	head_ref=$(_shim_pr_create_get_head "$@" 2>/dev/null || true)
+	[[ "$head_ref" =~ ^[A-Za-z0-9_.-]+:[A-Za-z0-9._/-]+$ ]] || return 1
+	response=$(_shim_run_transport "$REAL_GH" rest gh_pr_create_recovery 0 \
+		api "/repos/${repo_slug}/pulls" --method GET -f state=open \
+		-f "head=${head_ref}" -f per_page=5 2>/dev/null) || return 1
+	recovered_url=$(printf '%s\n' "$response" | jq -r --arg repo "$repo_slug" --arg head "$head_ref" \
+		'[.[] | select(.state == "open" and .head.label == $head and .base.repo.full_name == $repo)] | if length == 1 then .[0].html_url // empty else empty end' \
+		2>/dev/null || true)
+	_shim_pr_create_validate_url "$recovered_url" "$repo_slug"
+	return $?
+}
+
+_shim_run_pr_create_transport() {
+	local binary="$1"
+	local path="$2"
+	local caller="$3"
+	local retry="$4"
+	shift 4
+	local repo_slug=""
+	local stdout_file=""
+	local stderr_file=""
+	local rc=0
+	local durable_url=""
+	local output_has_url=0
+	repo_slug=$(_shim_target_repo_slug "$@" 2>/dev/null || true)
+	stdout_file=$(mktemp -t aidevops-gh-pr-create-out.XXXXXX 2>/dev/null || true)
+	stderr_file=$(mktemp -t aidevops-gh-pr-create-err.XXXXXX 2>/dev/null || true)
+	if [[ -z "$repo_slug" || -z "$stdout_file" || -z "$stderr_file" ]]; then
+		[[ -z "$stdout_file" ]] || rm -f "$stdout_file"
+		[[ -z "$stderr_file" ]] || rm -f "$stderr_file"
+		_shim_run_transport "$binary" "$path" "$caller" "$retry" "$@"
+		return $?
+	fi
+	_shim_run_transport "$binary" "$path" "$caller" "$retry" "$@" \
+		>"$stdout_file" 2>"$stderr_file" || rc=$?
+	durable_url=$(_shim_pr_create_url_from_output "$stdout_file" "$repo_slug" 2>/dev/null || true)
+	[[ -z "$durable_url" ]] || output_has_url=1
+	cat "$stdout_file"
+	cat "$stderr_file" >&2
+	if [[ $rc -ne 0 && -z "$durable_url" ]]; then
+		durable_url=$(_shim_pr_create_recover_exact_url "$repo_slug" "$@" 2>/dev/null || true)
+	fi
+	rm -f "$stdout_file" "$stderr_file"
+	if [[ $rc -ne 0 && -n "$durable_url" ]]; then
+		[[ $output_has_url -eq 1 ]] || printf '%s\n' "$durable_url"
+		printf '[aidevops][gh-shim][PARTIAL] Durable PR %s exists after a create-time mutation failure; not retrying creation.\n' \
+			"$durable_url" >&2
+		return "$_SHIM_PR_CREATE_PARTIAL_RC"
+	fi
+	return "$rc"
 }
 
 _shim_pr_create_get_title() {
@@ -1012,16 +1124,29 @@ _shim_authenticated_actor_has_repo_write() {
 	local current_user=""
 	local permission=""
 	[[ -n "$repo_slug" && "$repo_slug" == */* ]] || return 1
+	if [[ "$_SHIM_REPO_WRITE_CACHE_SLUG" == "$repo_slug" ]]; then
+		[[ "$_SHIM_REPO_WRITE_CACHE_RESULT" == "write" ]]
+		return $?
+	fi
 	#aidevops:trust-boundary -- exemption requires live GitHub identity and permission.
 	current_user=$(_shim_run_transport "$REAL_GH" rest gh_api_user 0 \
 		api user --jq '.login // empty' 2>/dev/null) || current_user=""
-	[[ -n "$current_user" && "$current_user" =~ ^[A-Za-z0-9-]+$ ]] || return 1
+	if [[ -z "$current_user" || ! "$current_user" =~ ^[A-Za-z0-9-]+$ ]]; then
+		_SHIM_REPO_WRITE_CACHE_SLUG="$repo_slug"
+		_SHIM_REPO_WRITE_CACHE_RESULT="unavailable"
+		return 1
+	fi
 	permission=$(_shim_run_transport "$REAL_GH" rest gh_api_collaborator_permission 0 \
 		api "/repos/${repo_slug}/collaborators/${current_user}/permission" \
 		--jq '.permission // .role_name // empty' 2>/dev/null) || permission=""
+	_SHIM_REPO_WRITE_CACHE_SLUG="$repo_slug"
 	case "$permission" in
-	admin | maintain | write) return 0 ;;
+	admin | maintain | write)
+		_SHIM_REPO_WRITE_CACHE_RESULT="write"
+		return 0
+		;;
 	esac
+	_SHIM_REPO_WRITE_CACHE_RESULT="unavailable"
 	return 1
 }
 

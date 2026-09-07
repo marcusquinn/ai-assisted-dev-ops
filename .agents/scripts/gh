@@ -1053,5 +1053,9 @@ _shim_ensure_requested_managed_labels_for_create || true
 # comment/edit) — these all use the GraphQL endpoint.
 _transport_caller=$(_shim_caller_label "${1:-}" "${2:-}")
 gh_record_call graphql "$_transport_caller" 2>/dev/null || true
+if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "pr:create" ]]; then
+	_shim_run_pr_create_transport "$REAL_GH" graphql "$_transport_caller" 0 "${_modified_args[@]}"
+	exit $?
+fi
 _shim_run_transport "$REAL_GH" graphql "$_transport_caller" 0 "${_modified_args[@]}"
 exit $?
