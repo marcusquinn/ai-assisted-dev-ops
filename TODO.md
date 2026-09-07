@@ -111,7 +111,7 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 -->
 
 - [ ] t18402 Compounding-value architecture and portable organisational knowledge #parent-task #enhancement #architecture #framework #interactive #priority:high tier:thinking ref:GH#31280 logged:2026-09-05 -> [todo/tasks/t18402-brief.md]
-  - [ ] t18403 Establish compounding-value purpose in README and architectural guidance #docs #framework #interactive #auto-dispatch #priority:high tier:standard parent:t18402 ref:GH#31285 logged:2026-09-05 -> [todo/tasks/t18403-brief.md]
+  - [x] t18403 Establish compounding-value purpose in README and architectural guidance #docs #framework #interactive #auto-dispatch #priority:high tier:standard parent:t18402 ref:GH#31285 logged:2026-09-05 -> [todo/tasks/t18403-brief.md] pr:#31360 completed:2026-09-06
   - [x] t18404 Prove repo-native plans and progress survive loss of a forge #enhancement #architecture #portability #interactive #auto-dispatch #priority:high tier:thinking parent:t18402 blocked-by:t18403 ref:GH#31286 logged:2026-09-05 -> [todo/tasks/t18404-brief.md] pr:#31365 completed:2026-09-06
   - [x] t18405 Verify primary-agent knowledge delivery across runtime entry points #enhancement #architecture #context #interactive #auto-dispatch #priority:high tier:thinking parent:t18402 blocked-by:t18403 ref:GH#31287 logged:2026-09-05 -> [todo/tasks/t18405-brief.md] pr:#31371 completed:2026-09-06
   - [x] t18406 Deduplicate Claude proxy framework context without losing provenance #bug #context #performance #interactive #auto-dispatch tier:standard parent:t18402 blocked-by:t18405 ref:GH#31291 logged:2026-09-05 -> [todo/tasks/t18406-brief.md] pr:#31395 completed:2026-09-06
