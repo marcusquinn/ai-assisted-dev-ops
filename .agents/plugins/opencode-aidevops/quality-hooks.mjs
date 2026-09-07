@@ -253,7 +253,7 @@ function enforceBashToolSafety(ctx, log, input, output, sessionId) {
   });
 }
 
-function enforceReadAndFileQuality(ctx, log, input, output, sessionId, sourceContextForPath) {
+function enforceReadAndFileQuality(ctx, log, input, output, { sessionId, sourceContextForPath }) {
   checkSecretReadWithApproval({
     tool: input.tool,
     args: output.args || {},
@@ -325,7 +325,7 @@ async function handleToolBefore(ctx, log, input, output) {
   }, input, output);
   enforceBashToolSafety(ctx, log, input, output, sessionId);
   if (isBashTool(input.tool)) rememberBashOutputPolicy(callID, output.args);
-  enforceReadAndFileQuality(ctx, log, input, output, sessionId, sourceContextForPath);
+  enforceReadAndFileQuality(ctx, log, input, output, { sessionId, sourceContextForPath });
 }
 
 function scrubObservedToolOutput(log, toolName, output) {

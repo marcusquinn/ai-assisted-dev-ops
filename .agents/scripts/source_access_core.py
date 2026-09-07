@@ -479,12 +479,19 @@ def _validated_context_reply(
         and type(reply.get("runtime_pid")) is int and type(reply.get("uid")) is int,
         "source context peer identity or challenge did not match",
     )
+    generation_error = "source context generation is invalid"
     _require_source(
         isinstance(reply.get("runtime_instance_id"), str)
-        and re.fullmatch(r"[a-f0-9]{32}", reply["runtime_instance_id"]) is not None
-        and type(reply.get("session_created_at")) is int and reply["session_created_at"] >= 0
-        and isinstance(reply.get("project_id"), str) and 0 < len(reply["project_id"]) <= 256,
-        "source context generation is invalid",
+        and re.fullmatch(r"[a-f0-9]{32}", reply["runtime_instance_id"]) is not None,
+        generation_error,
+    )
+    _require_source(
+        type(reply.get("session_created_at")) is int and reply["session_created_at"] >= 0,
+        generation_error,
+    )
+    _require_source(
+        isinstance(reply.get("project_id"), str) and 0 < len(reply["project_id"]) <= 256,
+        generation_error,
     )
     fields = ("session_id", "repo_root", "runtime_pid", "uid", "runtime_instance_id",
               "session_created_at", "project_id")
@@ -676,12 +683,16 @@ def load_source_proposal(config: Config, home: Path, proposal_id: str, uid: int)
     )
     record = _read_request_record(directory / f"{proposal_id}.json", uid)
     body = record.get("body")
+    identity_error = "proposal identity is invalid or was changed"
     _require_source(
         record.get("schema") == SCHEMA_PROPOSAL and record.get("proposal_id") == proposal_id
-        and record.get("state") == "pending" and isinstance(body, dict)
-        and type(body.get("uid")) is int and body["uid"] == uid
-        and hashlib.sha256(canonical_json(body)).hexdigest() == proposal_id,
-        "proposal identity is invalid or was changed",
+        and record.get("state") == "pending" and isinstance(body, dict),
+        identity_error,
+    )
+    _require_source(type(body.get("uid")) is int and body["uid"] == uid, identity_error)
+    _require_source(
+        hashlib.sha256(canonical_json(body)).hexdigest() == proposal_id,
+        identity_error,
     )
     _require_source(
         type(body.get("created_at")) is int and body["created_at"] >= 0,
@@ -714,12 +725,14 @@ def revalidate_source_proposal_metadata(
 def revalidate_source_proposal_context(body: dict[str, Any], uid: int) -> dict[str, Any]:
     """Re-challenge the recorded endpoint; never silently rebind its generation."""
     recorded = body.get("runtime_context")
+    error = "proposal has no actionable runtime context; new explicit context consent is required"
     _require_source(
-        isinstance(recorded, dict) and isinstance(recorded.get("socket_path"), str)
-        and isinstance(body.get("repository"), dict)
+        isinstance(recorded, dict) and isinstance(recorded.get("socket_path"), str), error,
+    )
+    _require_source(
+        isinstance(body.get("repository"), dict)
         and isinstance(body["repository"].get("root"), str)
-        and body.get("uid") == uid,
-        "proposal has no actionable runtime context; new explicit context consent is required",
+        and type(body.get("uid")) is int and body["uid"] == uid, error,
     )
     current = query_source_context(
         recorded["socket_path"], body.get("session_id", ""), body["repository"]["root"], uid,

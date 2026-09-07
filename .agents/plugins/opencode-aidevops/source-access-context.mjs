@@ -11,12 +11,25 @@ export const SOURCE_CONTEXT_QUERY = "aidevops-source-context-query/v1";
 export const SOURCE_CONTEXT_REPLY = "aidevops-source-context-reply/v1";
 const MAX_QUERY_BYTES = 8192;
 
+export function isUnprivilegedSourceRuntime() {
+  return typeof process.getuid === "function" && typeof process.geteuid === "function"
+    && process.getuid() > 0 && process.geteuid() === process.getuid();
+}
+
 function validQuery(query) {
-  return query?.schema === SOURCE_CONTEXT_QUERY
-    && /^[a-f0-9]{64}$/.test(query.nonce)
-    && /^ses_[A-Za-z0-9._:-]{2,252}$/.test(query.session_id)
-    && typeof query.repo_root === "string" && isAbsolute(query.repo_root)
+  if (query?.schema !== SOURCE_CONTEXT_QUERY) return false;
+  if (typeof query.nonce !== "string" || !/^[a-f0-9]{64}$/.test(query.nonce)) return false;
+  if (typeof query.session_id !== "string" || !/^ses_[A-Za-z0-9._:-]{2,252}$/.test(query.session_id)) return false;
+  return typeof query.repo_root === "string" && isAbsolute(query.repo_root)
     && !/[\u0000-\u001f\u007f]/.test(query.repo_root);
+}
+
+function availableSession(session, sessionId) {
+  if (session?.id !== sessionId) return false;
+  const created = session.time?.created;
+  if (!Number.isSafeInteger(created) || created < 0 || session.time.archived != null) return false;
+  return typeof session.directory === "string" && typeof session.projectID === "string"
+    && session.projectID.length > 0 && session.projectID.length <= 256;
 }
 
 /**
@@ -30,12 +43,10 @@ export function createSourceContextResponder({ lookupSession, verifyOwner, sameR
     throw new Error("source context requires runtime and worktree verifiers");
   }
   return async (query, signal) => {
+    if (!isUnprivilegedSourceRuntime()) throw new Error("source context requires an unprivileged runtime");
     if (!validQuery(query) || signal?.aborted) throw new Error("invalid source context query");
     const session = await lookupSession(query.session_id, signal);
-    if (session?.id !== query.session_id || !Number.isSafeInteger(session.time?.created)
-      || session.time.created < 0 || session.time.archived != null
-      || typeof session.directory !== "string" || typeof session.projectID !== "string"
-      || !session.projectID || session.projectID.length > 256) {
+    if (!availableSession(session, query.session_id)) {
       throw new Error("source context session is unavailable");
     }
     if (await sameRepository(session.directory, query.repo_root, signal) !== true
@@ -54,8 +65,7 @@ export function createSourceContextResponder({ lookupSession, verifyOwner, sameR
 }
 
 function privateSocketDirectory(directory, privateLeaf = true) {
-  if (!isAbsolute(directory) || process.getuid() === 0
-    || process.geteuid() !== process.getuid()) return false;
+  if (!isAbsolute(directory) || !isUnprivilegedSourceRuntime()) return false;
   let current = directory;
   while (true) {
     const metadata = lstatSync(current);
@@ -84,45 +94,45 @@ export function prepareSourceContextDirectory(parent) {
   return directory;
 }
 
+function readContextChunk(connection, respond, state, request, chunk) {
+  if (request.started) return connection.destroy();
+  request.input = Buffer.concat([request.input, chunk]);
+  if (request.input.length > MAX_QUERY_BYTES) return connection.destroy();
+  if (!request.input.includes(10)) return;
+  request.started = true;
+  let query;
+  try {
+    query = JSON.parse(request.input.toString("utf8"));
+  } catch {
+    connection.destroy();
+    return;
+  }
+  if (state.pending >= 8) return connection.destroy();
+  state.pending++;
+  Promise.resolve().then(() => respond(query, request.controller.signal)).then((reply) => {
+    if (!connection.destroyed) connection.end(`${JSON.stringify(reply)}\n`);
+  }).catch(() => {
+    // Never forward SDK errors, titles, messages, credentials or source bytes.
+    if (!connection.destroyed) connection.end('{"error":"context unavailable"}\n');
+  }).finally(() => {
+    state.pending--;
+  });
+}
+
 function acceptContextQuery(connection, respond, state) {
   const { connections } = state;
   if (connections.size >= 8 || state.pending >= 8) return connection.destroy();
   connections.add(connection);
-  const controller = new AbortController();
-  let input = Buffer.alloc(0);
-  let started = false;
+  const request = { controller: new AbortController(), input: Buffer.alloc(0), started: false };
   const deadline = setTimeout(() => connection.destroy(), 5000);
   deadline.unref();
   connection.on("error", () => connection.destroy());
   connection.once("close", () => {
     clearTimeout(deadline);
-    controller.abort();
+    request.controller.abort();
     connections.delete(connection);
   });
-  connection.on("data", (chunk) => {
-    if (started) return connection.destroy();
-    input = Buffer.concat([input, chunk]);
-    if (input.length > MAX_QUERY_BYTES) return connection.destroy();
-    if (!input.includes(10)) return;
-    started = true;
-    let query;
-    try {
-      query = JSON.parse(input.toString("utf8"));
-    } catch {
-      connection.destroy();
-      return;
-    }
-    if (state.pending >= 8) return connection.destroy();
-    state.pending++;
-    Promise.resolve().then(() => respond(query, controller.signal)).then((reply) => {
-      if (!connection.destroyed) connection.end(`${JSON.stringify(reply)}\n`);
-    }).catch(() => {
-      // Never forward SDK errors, titles, messages, credentials or source bytes.
-      if (!connection.destroyed) connection.end('{"error":"context unavailable"}\n');
-    }).finally(() => {
-      state.pending--;
-    });
-  });
+  connection.on("data", (chunk) => readContextChunk(connection, respond, state, request, chunk));
 }
 
 /** Opt-in transport primitive; importing this module starts no listener. */
