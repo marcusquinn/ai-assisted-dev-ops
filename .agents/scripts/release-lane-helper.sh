@@ -26,6 +26,10 @@ _AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH="reserved-authorization-refresh"
 _AIDEVOPS_RELEASE_LANE_PHASE_RECONCILE_REQUIRED="reconcile-required"
 _AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING="aggregation-successor-preparing"
 
+_AIDEVOPS_RELEASE_LANE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=release-lane-liveness.sh
+source "${_AIDEVOPS_RELEASE_LANE_LIB_DIR}/release-lane-liveness.sh"
+
 _release_lane_cache_path() {
 	local repo="$1"
 	local key="${repo//\//-}"
@@ -171,11 +175,18 @@ _release_lane_reclaim_same_source() {
 	local state_json=""
 	local operation_token=""
 	_release_lane_stale_prepublication "$_AIDEVOPS_RELEASE_LANE_JSON" || return 3
+	# Modern reservations must not steal a live/foreign executor based on age.
+	if jq -e '.executor != null' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		[[ "$(_release_lane_executor_observe "$_AIDEVOPS_RELEASE_LANE_JSON" | jq -r '.state')" == "dead" ]] || return 3
+	fi
 	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
 	state_json=$(jq -c --arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
 		--arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" --arg token "$operation_token" \
 		'.owner=$owner | .operation_token=$token | .updated_at=$now | .phase=$reserved' \
 		<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	# A resumed transaction may use older code: do not inherit auto-recovery eligibility.
+	state_json=$(jq -c --argjson executor "$(_release_lane_executor_capture || printf 'null')" \
+		'.executor=$executor | del(.reservation_contract)' <<<"$state_json") || return 1
 	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
 	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
 	_AIDEVOPS_RELEASE_LANE_RESULT="$_AIDEVOPS_RELEASE_LANE_RESULT_ACQUIRED"
@@ -240,7 +251,7 @@ release_lane_acquire() {
 			printf 'ACTIVE_RELEASE_LANE source_pr=%s phase=%s tag=%s\n' "$active_pr" "$phase" \
 				"$(jq -r '.tag // "pending"' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
 			printf 'Inspect with: aidevops release status %s\n' "$active_pr"
-			printf 'Resume with: aidevops release reconcile %s\n' "$active_pr"
+			release_lane_liveness_report "$_AIDEVOPS_RELEASE_LANE_JSON"
 			if [[ "$active_pr" == "$source_pr" ]]; then
 				_release_lane_reclaim_same_source "$repo" "$source_pr" || reclaim_rc=$?
 				case "$reclaim_rc" in
@@ -267,6 +278,8 @@ release_lane_acquire() {
 		'{schema_version:1,repository:$repo,active:true,
 		source_pr:$source_pr,expected_sources:$expected_sources,phase:$reserved,tag:null,owner:$owner,operation_token:$token,
 		updated_at:$now,terminal_receipt:null}') || return 1
+	state_json=$(jq -c --argjson executor "$(_release_lane_executor_capture || printf 'null')" \
+		'.executor=$executor | .reservation_contract="fenced-prepublication/v1"' <<<"$state_json") || return 1
 	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
 	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
 	_AIDEVOPS_RELEASE_LANE_RESULT="$_AIDEVOPS_RELEASE_LANE_RESULT_ACQUIRED"
@@ -957,6 +970,12 @@ release_lane_merge_guard() {
 	if [[ "$active" == "false" ]]; then
 		return 0
 	fi
+	# Recover only proven-dead modern pre-publication ownership; never a timeout unlock.
+	if _release_lane_abandoned_reservation "$_AIDEVOPS_RELEASE_LANE_JSON"; then
+		source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		release_lane_recover_reservation "$repo" "$source_pr" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return 75
+		return 0
+	fi
 	case "$phase" in
 	reserved | preparing | reconcile-required | remote-publication | exact-tag-deployment | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" | "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING") ;;
 	*)
@@ -982,6 +1001,7 @@ release_lane_merge_guard() {
 	fi
 	printf 'ACTIVE_RELEASE_LANE_MERGE_BLOCKED source_pr=%s phase=%s tag=%s\n' \
 		"$source_pr" "$phase" "${tag_name:-pending}" >&2
+	release_lane_liveness_report "$_AIDEVOPS_RELEASE_LANE_JSON" >&2
 	return 75
 }
 
