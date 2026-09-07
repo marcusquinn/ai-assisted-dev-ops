@@ -300,7 +300,7 @@ def manifest_scope_id(
 
 
 def secure_source_content(path: str) -> tuple[bytes, str]:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -324,10 +324,16 @@ def secure_source_content(path: str) -> tuple[bytes, str]:
             content.extend(chunk)
             digest.update(chunk)
         current_stat = os.lstat(path)
+        final_stat = os.fstat(descriptor)
+        identity_fields = (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_uid",
+            "st_size", "st_mtime_ns", "st_ctime_ns",
+        )
         _require_source(
             stat.S_ISREG(current_stat.st_mode)
             and current_stat.st_dev == opened_stat.st_dev
-            and current_stat.st_ino == opened_stat.st_ino,
+            and current_stat.st_ino == opened_stat.st_ino
+            and all(getattr(final_stat, field) == getattr(opened_stat, field) for field in identity_fields),
             "source path changed during approval",
         )
     except OSError as exc:

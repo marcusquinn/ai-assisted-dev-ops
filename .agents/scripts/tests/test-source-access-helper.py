@@ -141,6 +141,35 @@ class SourceAccessHelperTests(unittest.TestCase):
                     core._run(command)
             run.assert_not_called()
 
+    def test_source_reader_requests_nonblocking_open_for_replacement_fifo(self) -> None:
+        core = HELPER._SOURCE_CORE
+        fifo = self.root / "replacement-fifo"
+        os.mkfifo(fifo, 0o600)
+        real_open = os.open
+        # Force the fixture nonblocking even before the fix, so the regression cannot hang.
+        with mock.patch.object(core.os, "open", side_effect=lambda path, flags: real_open(
+                path, flags | os.O_NONBLOCK)) as opened:
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "non-regular"):
+                core.secure_source_content(str(fifo))
+        self.assertTrue(opened.call_args.args[1] & os.O_NONBLOCK)
+
+    def test_source_reader_rejects_in_place_mutation_during_read(self) -> None:
+        core = HELPER._SOURCE_CORE
+        real_read = os.read
+        mutated = False
+
+        def read_and_mutate(descriptor: int, size: int) -> bytes:
+            nonlocal mutated
+            chunk = real_read(descriptor, size)
+            if not mutated:
+                mutated = True
+                self.source.write_text("changed synthetic source\n", encoding="utf-8")
+            return chunk
+
+        with mock.patch.object(core.os, "read", side_effect=read_and_mutate):
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "changed during approval"):
+                core.secure_source_content(str(self.source))
+
     def _proposal_cli(self, arguments: list[str], now: int) -> str:
         output = io.StringIO()
         with (mock.patch.object(HELPER, "Config", return_value=self.config),
