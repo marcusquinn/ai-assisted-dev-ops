@@ -30,8 +30,9 @@ def host_id():
 
 
 def process_start(pid):
+    # Identity evidence must not be selected by a caller-controlled PATH.
     result = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "lstart="],
+        ["/bin/ps", "-p", str(pid), "-o", "lstart="],
         capture_output=True, text=True, timeout=5, check=False,
         env={**os.environ, "LC_ALL": "C"},
     )

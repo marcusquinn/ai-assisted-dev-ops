@@ -23,6 +23,11 @@ class OwnerTests(unittest.TestCase):
         self.assertEqual(OWNER.observe(identity)["state"], "live")
         self.assertEqual(len(identity["host_id"]), 64)
 
+    def test_process_observation_ignores_path(self):
+        expected = OWNER.process_start(os.getpid())
+        with patch.dict(os.environ, {"PATH": "/nonexistent"}):
+            self.assertEqual(OWNER.process_start(os.getpid()), expected)
+
     def test_exited_real_process_is_dead(self):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
