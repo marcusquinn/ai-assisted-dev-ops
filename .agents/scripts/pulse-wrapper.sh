@@ -216,6 +216,12 @@ if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" && -r "${_pw_bootstrap_script_dir}/pulse
 	unset _pw_pin_rc
 fi
 source "${_pw_bootstrap_script_dir}/portable-stat.sh"
+# Bootstrap recovery must run before the runtime lease is acquired. A clean,
+# exact canonical main checkout may atomically activate its newer runtime;
+# unsafe states are recorded once and Pulse continues on the current bundle.
+# shellcheck source=./pulse-runtime-recovery.sh
+source "${_pw_bootstrap_script_dir}/pulse-runtime-recovery.sh"
+pulse_runtime_recover_if_safe "$@"
 # shellcheck source=./runtime-bundle-lease.sh
 source "${_pw_bootstrap_script_dir}/runtime-bundle-lease.sh"
 if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]]; then

@@ -46,7 +46,10 @@ json.dump({
         'dispatch_candidate_failed_reason_dedup_active_claim': [now],
         'dispatch_candidate_failed_reason_graphql_circuit_breaker': [now],
     },
-    'gauges': {'graphql_remaining': {'value': 1234, 'ts': now}},
+    'gauges': {
+        'graphql_remaining': {'value': 1234, 'ts': now},
+        'pulse_dispatch_guardrail_available_slots': {'value': 2, 'ts': now},
+    },
 }, open(os.path.join(root, 'pulse-stats.json'), 'w'))
 json.dump({
     '_meta': {'total_calls': 42},
@@ -99,10 +102,22 @@ json.dump({
 }, open(os.path.join(root, 'objective-reconciliation.json'), 'w'))
 open(os.path.join(root, 'pulse-wrapper.log'), 'w').write(
     '[pulse] useful activity\n'
+    f'[lifecycle] worker_killed pid=123 reason=process_guard_node trigger_age=60s session=pulse ts={iso}\n'
     'ERROR Refusing reconciliation: HEAD is not exact origin/develop SHA private-sha\n'
     '[pulse-canonical-recovery] diagnostic-only canonical state: /private/path (state=uncommitted)\n'
     '[pulse-canonical-recovery] advisory filed locally: /private/path/canonical-recovery-repo.advisory\n'
     'PR opened #2\nPR merged #2\nissue closed #1\nInstance lock acquired\n'
+)
+blocker = {
+    'schema': 'aidevops-worker-blocker/v1', 'ts': now - 10,
+    'event': 'permission_awaiting_approval', 'status': 'blocked', 'reason': 'permission_required',
+    'blocking': True, 'repo_slug': 'owner/repo', 'issue_number': 7,
+    'session_key': 'issue-7', 'request_id': 'perm-current',
+}
+historical = dict(blocker, ts=now - 20, issue_number=8, session_key='issue-8', request_id='perm-old')
+reconciled = dict(historical, ts=now - 5, event='issue_terminal_reconciled', status='resolved', blocking=False)
+open(os.path.join(root, 'worker-progress-blockers.jsonl'), 'w').write(
+    json.dumps(historical) + '\n' + json.dumps(reconciled) + '\n' + json.dumps(blocker) + '\n'
 )
 state_dir = os.path.join(root, 'review-thread-state')
 os.makedirs(state_dir, exist_ok=True)
@@ -204,6 +219,14 @@ jq -e '.objective_reconciliation.oldest_unverified_assumption.number == 41' "$js
 jq -e '.canonical_reconciliation.refusal_count == 1' "$json_output" >/dev/null
 jq -e '.canonical_reconciliation.classification == "dirty_or_uncommitted"' "$json_output" >/dev/null
 jq -e '.canonical_reconciliation.canonical_recovery_advisory_observed == true' "$json_output" >/dev/null
+jq -e '.zero_worker_underutilization.actionable == false' "$json_output" >/dev/null
+jq -e '.zero_worker_underutilization.available_slots == 2' "$json_output" >/dev/null
+jq -e '.zero_worker_underutilization.classifications.assignment_ownership == 1' "$json_output" >/dev/null
+jq -e '.permission_evidence.retained_records == 3' "$json_output" >/dev/null
+jq -e '.permission_evidence.proven_current_blockers == 1' "$json_output" >/dev/null
+jq -e '.permission_evidence.historical_or_reconciled == 1' "$json_output" >/dev/null
+jq -e '.resource_recovery.direct_evidence_count == 2' "$json_output" >/dev/null
+jq -e '.resource_recovery.reason_counts.process_guard_node == 1' "$json_output" >/dev/null
 if grep -Eq '/private/path|develop SHA|private-sha' "$json_output"; then
 	printf 'FAIL canonical reconciliation projection exposes raw diagnostic context\n' >&2
 	exit 1
@@ -230,6 +253,9 @@ assert 'def build_graphql_budget' in implementation_source
 assert 'def build_current_state_guardrails' in implementation_source
 assert 'def build_objective_reconciliation' in implementation_source
 assert 'def build_cycle_state' in implementation_source
+assert 'def build_zero_worker_underutilization' in implementation_source
+assert 'def build_permission_evidence' in implementation_source
+assert 'def build_resource_recovery_evidence' in implementation_source
 assert "graphql_budget_status = (" not in implementation_source
 assert 'import subprocess' not in implementation_source
 assert 'subprocess.check_output' not in implementation_source
@@ -271,5 +297,36 @@ inconsistent_cycle_json="$TMP_DIR/inconsistent-cycle-state.json"
 "$HELPER" --log-dir "$missing_dir" --repo-path "$PWD" --window 15m --json >"$inconsistent_cycle_json"
 jq -e '.cycle_state.availability == "malformed" and .cycle_state.reason == "cycle-state-contract"' \
 	"$inconsistent_cycle_json" >/dev/null
+
+zero_dir="$TMP_DIR/zero-worker"
+mkdir -p "$zero_dir"
+python3 - "$zero_dir" <<'PY'
+import json, os, sys, time
+root = sys.argv[1]
+now = time.time()
+iso = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))
+json.dump({
+    'counters': {
+        'dispatch_candidate_failed_reason_missing_auto_dispatch_label': [now],
+        'dispatch_candidate_failed_reason_blocked_by_dependency': [now],
+        'dispatch_candidate_failed_reason_dedup_active_claim': [now],
+        'dispatch_candidate_failed_reason_admission_validation': [now],
+        'dispatch_candidate_failed_reason_candidate_enumeration_unavailable': [now],
+    },
+    'gauges': {'pulse_dispatch_guardrail_available_slots': {'value': 2, 'ts': now}},
+}, open(os.path.join(root, 'pulse-stats.json'), 'w'))
+json.dump({'cycle_state': {
+    'schema': 'aidevops.pulse-cycle-state/v1', 'cycle_id': 'zero-1',
+    'phase': 'completed', 'outcome': 'idle', 'heartbeat_at': iso,
+    'progress': {'last_at': None, 'kinds': [], 'consecutive_no_progress_cycles': 5},
+    'blocker': {'kind': 'none', 'fingerprint': None, 'consecutive_same_cycles': 0},
+}}, open(os.path.join(root, 'pulse-health.json'), 'w'))
+PY
+zero_json="$TMP_DIR/zero-worker.json"
+AIDEVOPS_ACTIVE_WORKER_PROCESSES_OVERRIDE=0 AIDEVOPS_ZERO_WORKER_MIN_CYCLES=3 \
+	"$HELPER" --log-dir "$zero_dir" --repo-path "$PWD" --window 15m --json >"$zero_json"
+jq -e '.zero_worker_underutilization.actionable == true' "$zero_json" >/dev/null
+jq -e '.zero_worker_underutilization.github_read_complete == false' "$zero_json" >/dev/null
+jq -e '.zero_worker_underutilization.classifications == {"admission_failure":1,"assignment_ownership":1,"dependency_state":1,"github_read_incomplete":1,"queue_labels":1}' "$zero_json" >/dev/null
 
 printf 'PASS pulse-current-state-helper\n'
