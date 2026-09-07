@@ -483,21 +483,26 @@ test_detached_claim_does_not_invent_active_owner() {
 
 test_profile_publication_detached_evidence_is_exact_and_fail_closed() {
 	local identity='' evidence='' result='' disposition='' reason='' mode=''
+	local evidence_path="${TEST_DIR}/profile-evidence.json"
 	local rc=0
 	identity=$(jq -cn \
 		'{format:"aidevops-worktree-recovery-v2",archive_path:"/recovery/profile",source_path:"/worktrees/profile-readme",head:"abc123",branch:"detached",producer:"profile-readme-helper.sh",producer_context:"recovery_path=profile-publication-archive profile_scratch=true",source_removal_outcome:"removed"}') || rc=1
 
 	for mode in published unpublished unavailable; do
-		evidence=$(
+		if ! (
 			_worktree_recovery_plan_repo_slug() {
 				printf '%s\n' 'example/profile'
 				return 0
 			}
-			command() { [[ "$1" == '-v' && "$2" == 'gh' ]]; }
+			command() {
+				[[ "$1" == '-v' && "$2" == 'gh' ]]
+			}
 			gh() {
 				[[ "$mode" != 'unavailable' ]] || return 1
 				case "$2" in
-				'repos/example/profile') printf '%s\n' 'main' ;;
+				'repos/example/profile')
+					printf '%s\n' 'main'
+					;;
 				'repos/example/profile/compare/abc123...main')
 					if [[ "$mode" == 'published' ]]; then
 						printf 'ahead\tabc123\n'
@@ -509,8 +514,11 @@ test_profile_publication_detached_evidence_is_exact_and_fail_closed() {
 				esac
 				return 0
 			}
-			_worktree_recovery_plan_profile_publication_evidence_json "$identity"
-		) || rc=1
+			_worktree_recovery_plan_profile_publication_evidence_json "$identity" >"$evidence_path"
+		); then
+			rc=1
+		fi
+		evidence=$(<"$evidence_path") || rc=1
 		case "$mode" in
 		published)
 			printf '%s\n' "$evidence" | jq -e \
@@ -542,7 +550,7 @@ test_profile_publication_detached_evidence_is_exact_and_fail_closed() {
 	result=$(_worktree_recovery_plan_classification_json "$identity" \
 		"$(jq -cn --argjson external "$evidence" '{git:"clear",worktree:"clear",registry:"clear",claim:"not-applicable",process:"active",external:$external}')" true) || rc=1
 	[[ "$(printf '%s\n' "$result" | jq -r '.reasons[0]')" == 'active-process-reference' ]] || rc=1
-	evidence=$(
+	if ! (
 		_worktree_recovery_plan_git_state() { printf 'clear\n'; }
 		_worktree_recovery_plan_worktree_reference_state() { printf 'clear\n'; }
 		_worktree_recovery_plan_registry_state() { printf 'clear\n'; }
@@ -551,8 +559,11 @@ test_profile_publication_detached_evidence_is_exact_and_fail_closed() {
 		_worktree_recovery_plan_external_evidence_json() {
 			printf '%s\n' '{"commit":"published","open_pr":"clear","task":"not-applicable","issue_number":null,"repo":"example/profile","provenance":"profile-publication"}'
 		}
-		_worktree_recovery_plan_evidence_json "$identity"
-	) || rc=1
+		_worktree_recovery_plan_evidence_json "$identity" >"$evidence_path"
+	); then
+		rc=1
+	fi
+	evidence=$(<"$evidence_path") || rc=1
 	[[ "$(printf '%s\n' "$evidence" | jq -r '.claim')" == 'not-applicable' ]] || rc=1
 	[[ "$(printf '%s\n' "$evidence" | jq -r '.external.commit')" == 'published' ]] || rc=1
 	print_result "profile_publication_detached_evidence_is_exact_and_fail_closed" "$rc" \
