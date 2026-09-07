@@ -411,12 +411,18 @@ _release_lane_reclaim_same_source() {
 	state_json=$(jq -c --argjson executor "$(_release_lane_executor_capture || printf 'null')" \
 		--arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
 		--arg type "$_AIDEVOPS_RELEASE_LANE_RECLAIM_CONTRACT" --arg previous_head "$_AIDEVOPS_RELEASE_LANE_HEAD" \
+		--arg sha_pattern "$_AIDEVOPS_RELEASE_LANE_SHA_PATTERN" \
 		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
 		.executor as $previous_executor | (.reservation_contract // null) as $prior_contract
+		| (.reservation_contract_reclaim // null) as $existing_reclaim
 		| .executor=$executor
 		| if $prior_contract == $contract then
 			.reservation_contract_reclaim={type:$type,prior_contract:$prior_contract,
 				previous_head:$previous_head,previous_executor:$previous_executor,reclaimed_at:$now}
+		  elif ($existing_reclaim.type == $type
+			and $existing_reclaim.prior_contract == $contract
+			and ($existing_reclaim.previous_head | test($sha_pattern))) then
+			.reservation_contract_reclaim=$existing_reclaim
 		  else del(.reservation_contract_reclaim) end
 		| del(.reservation_contract)
 	' <<<"$state_json") || return 1

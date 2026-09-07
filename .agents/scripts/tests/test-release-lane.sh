@@ -236,6 +236,14 @@ run_default_stale_boundary_and_fencing_test() (
 		and .reservation_contract_reclaim.previous_head == "1111111111111111111111111111111111111111"' \
 		<<<"$written" >/dev/null || return 1
 	_AIDEVOPS_RELEASE_LANE_TOKEN="token-old"
+	state=$(jq -c '.updated_at="2020-01-01T00:00:00Z"' <<<"$written") || return 1
+	_release_lane_executor_observe() { printf '{"state":"dead"}\n'; }
+	release_lane_acquire test/repo 101 101 >/dev/null || return 1
+	[[ "$writes" -eq 2 ]] || return 1
+	jq -e '.reservation_contract_reclaim.type == "same-source-reclaim/v1"
+		and .reservation_contract_reclaim.previous_head == "1111111111111111111111111111111111111111"' \
+		<<<"$written" >/dev/null || return 1
+	_AIDEVOPS_RELEASE_LANE_TOKEN="token-old"
 	if release_lane_update test/repo 101 preparing; then
 		return 1
 	fi
