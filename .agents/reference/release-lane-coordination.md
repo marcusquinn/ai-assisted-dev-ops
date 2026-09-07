@@ -105,12 +105,29 @@ new session publication authority. Do not report background progress without
 an observed executor or current recovery evidence. A resumed legacy transaction
 does not gain automatic-recovery eligibility merely by acquiring new metadata.
 
+### Legacy authorization on a pinned snapshot (GH#31479)
+
+An authorized same-source retry may encounter an implicit singleton authorization
+record from before snapshot support. When the lane is pinned, reserved, tagless
+and nonterminal with no legacy recovery transaction, capture verifies the complete
+snapshot and requires the old immutable source set to be a compatible subset.
+It binds the complete manifest through the publisher CAS before migrating the
+local authorization, retaining the previous authorization in its existing recovery
+audit record. If local persistence fails, retry the same command: the identical
+lane-bound snapshot resumes without rollback or selecting a newer main tip.
+
+Current explicit `--expected-sources` remains an exact assertion; it is never
+silently widened. Conflicting source SHAs, stale owner tokens, mismatched pins,
+publication state and uncertain reads fail closed. This migration changes neither
+signed tags nor an established snapshot range and adds no publication authority.
+
 ## Verification
 
 Run from the repository root:
 
 ```bash
 bash .agents/scripts/tests/test-release-snapshot-helper.sh
+bash .agents/scripts/tests/test-release-snapshot-migration.sh
 bash .agents/scripts/tests/test-release-lane-reservation.sh
 bash .agents/scripts/tests/test-release-lane.sh
 python3 .agents/scripts/tests/test-release-lane-owner.py
