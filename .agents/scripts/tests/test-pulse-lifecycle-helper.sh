@@ -1358,6 +1358,44 @@ test_status_sidecar_only_reports_not_running() {
 	return 0
 }
 
+test_default_process_pattern_is_scoped_to_current_home() {
+	_kill_mocks
+	local scoped_home="${TEST_ROOT}/scoped-home"
+	local foreign_home="${TEST_ROOT}/foreign-home"
+	local scoped_wrapper="${scoped_home}/.aidevops/agents/scripts/pulse-wrapper.sh"
+	local foreign_wrapper="${foreign_home}/.aidevops/agents/scripts/pulse-wrapper.sh"
+	local foreign_pid=""
+	local scoped_pid=""
+	local rc=0
+	mkdir -p "${scoped_wrapper%/*}" "${foreign_wrapper%/*}"
+	cp "${TEST_ROOT}/scripts/pulse-wrapper.sh" "$scoped_wrapper"
+	cp "${TEST_ROOT}/scripts/pulse-wrapper.sh" "$foreign_wrapper"
+	chmod +x "$scoped_wrapper" "$foreign_wrapper"
+
+	bash "$foreign_wrapper" >/dev/null 2>&1 &
+	foreign_pid=$!
+	MOCK_PIDS+=("$foreign_pid")
+	sleep 0.3
+	HOME="$scoped_home" \
+		AIDEVOPS_AGENTS_DIR="${scoped_home}/.aidevops/agents" \
+		env -u AIDEVOPS_PULSE_PROCESS_PATTERN -u AIDEVOPS_PULSE_MERGE_PROCESS_PATTERN \
+		"$HELPER" is-running >/dev/null 2>&1 || rc=$?
+	_assert_eq "default process pattern ignores another user's Pulse" "1" "$rc"
+
+	rc=0
+	bash "$scoped_wrapper" >/dev/null 2>&1 &
+	scoped_pid=$!
+	MOCK_PIDS+=("$scoped_pid")
+	sleep 0.3
+	HOME="$scoped_home" \
+		AIDEVOPS_AGENTS_DIR="${scoped_home}/.aidevops/agents" \
+		env -u AIDEVOPS_PULSE_PROCESS_PATTERN -u AIDEVOPS_PULSE_MERGE_PROCESS_PATTERN \
+		"$HELPER" is-running >/dev/null 2>&1 || rc=$?
+	_assert_eq "default process pattern recognises current user's Pulse" "0" "$rc"
+	_kill_mocks
+	return 0
+}
+
 # -----------------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------------
@@ -1408,6 +1446,7 @@ main() {
 	test_status_four_main_plus_sidecar_warns
 	test_is_running_returns_false_with_only_sidecar
 	test_status_sidecar_only_reports_not_running
+	test_default_process_pattern_is_scoped_to_current_home
 
 	echo ""
 	echo "----"

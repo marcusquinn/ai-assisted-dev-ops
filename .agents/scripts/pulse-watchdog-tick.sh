@@ -96,6 +96,12 @@ _systemd_pulse_alive() {
 	[[ "$_active_state" == "active" || "$_active_state" == "activating" ]]
 }
 
+_lifecycle_reports_running() {
+	[[ -x "$_LIFECYCLE_HELPER" ]] || return 1
+	"$_LIFECYCLE_HELPER" is-running >/dev/null 2>&1
+	return $?
+}
+
 _revive_pulse() {
 	if _systemd_owns_pulse; then
 		systemctl --user start "$_SYSTEMD_PULSE_UNIT" >>"$_WATCHDOG_LOG" 2>&1 || _wd_log "systemd revival exit=$?"
@@ -117,7 +123,10 @@ if _systemd_owns_pulse; then
 	if _systemd_pulse_alive; then
 		exit 0
 	fi
-elif "$_LIFECYCLE_HELPER" is-running >/dev/null 2>&1; then
+	if _lifecycle_reports_running; then
+		exit 0
+	fi
+elif _lifecycle_reports_running; then
 	exit 0
 fi
 

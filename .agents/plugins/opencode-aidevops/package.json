@@ -17,7 +17,7 @@
   "author": "Marcus Quinn",
   "license": "MIT",
   "opencode": {
-    "tracked_version": "1.18.25",
+    "tracked_version": "1.18.29",
     "repo": "anomalyco/opencode"
   },
   "peerDependencies": {
