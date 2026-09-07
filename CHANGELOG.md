@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.333] - 2026-09-07
+
+### Fixed
+
+- bound rejected worker dependency provisioning attempts
+- reject unsafe Ollama summary URL schemes
+- preserve open PR progress (#31490)
+- recover stalled Pulse runtime safely (#31488)
+
 ## [3.32.332] - 2026-09-07
 
 ### Changed
