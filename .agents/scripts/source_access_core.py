@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import ctypes
 import fcntl
 import hashlib
 import http.client
@@ -14,6 +16,7 @@ import pwd
 import re
 import secrets
 import select
+import shutil
 import socket
 import ssl
 import stat
@@ -67,6 +70,8 @@ GITHUB_COLLECTION_BYTES = 8 * 1024 * 1024
 GITHUB_MAX_PAGES = 32
 GITHUB_OPERATION_SECONDS = 20
 GITHUB_SNAPSHOT_BYTES = 20 * 1024 * 1024
+ATOMIC_BUNDLE_LAYOUT = "atomic-directory/v1"
+ISSUE_SIGNATURE_NAMESPACE = "aidevops-approve"
 
 
 def _current_timestamp() -> int:
@@ -345,15 +350,31 @@ def issue_snapshot_bytes(snapshot: dict[str, Any]) -> bytes:
                       allow_nan=False).replace("\x7f", "\\u007f").encode("utf-8")
 
 
-def _issue_snapshot_child(sender: Any, reader: GitHubIssueReader, issued_at: str, excluded: int | None) -> None:
+def _issue_snapshot_child(descriptors: tuple[int, int], reader: GitHubIssueReader, issued_at: str,
+                          excluded: int | None, approval_body: str | None) -> None:
+    receiver, sender = descriptors
+    os.close(receiver)
     try:
-        content = issue_snapshot_bytes(build_issue_signing_snapshot(reader, issued_at, excluded))
+        if approval_body is not None:
+            matches = [comment for comment in reader.collection("comments")
+                       if isinstance(comment.get("body"), str) and comment["body"].startswith(approval_body)
+                       and comment.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")]
+            _require_source(len(matches) == 1 and type(matches[0].get("id")) is int and matches[0]["id"] > 0,
+                            "issue publication is unconfirmed or ambiguous")
+            excluded = matches[0]["id"]
+        snapshot = build_issue_signing_snapshot(reader, issued_at, excluded)
+        result = snapshot if approval_body is None else {"snapshot": snapshot, "comment_id": excluded}
+        content = issue_snapshot_bytes(result)
         _require_source(len(content) <= GITHUB_SNAPSHOT_BYTES, "issue snapshot exceeds the limit")
-        sender.send_bytes(b"OK\n" + content)
+        content = b"OK\n" + content
     except Exception:
-        sender.send_bytes(b"ERROR")
+        content = b"ERROR"
+    try:
+        remaining = memoryview(content)
+        while remaining:
+            remaining = remaining[os.write(sender, remaining[:65536]):]
     finally:
-        sender.close()
+        os.close(sender)
 
 
 def _stop_issue_reader(process: Any) -> None:
@@ -368,8 +389,23 @@ def _stop_issue_reader(process: Any) -> None:
     process.close()
 
 
+def _issue_reader_bytes(descriptor: int) -> bytes:
+    deadline = time.monotonic() + GITHUB_OPERATION_SECONDS
+    content = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        _require_source(remaining > 0 and bool(select.select([descriptor], [], [], max(0, remaining))[0]),
+                        "issue verification timed out; no authority was issued")
+        chunk = os.read(descriptor, 65536)
+        if not chunk:
+            return bytes(content)
+        content.extend(chunk)
+        _require_source(len(content) <= GITHUB_SNAPSHOT_BYTES + 3, "issue snapshot exceeds the limit")
+
+
 def collect_issue_signing_snapshot(reader: GitHubIssueReader, issued_at: str,
-                                   excluded_comment_id: int | None = None) -> dict[str, Any]:
+                                   excluded_comment_id: int | None = None, *,
+                                   approval_body: str | None = None) -> dict[str, Any]:
     """Bound DNS, headers, pagination and parsing in an owned, non-daemon child.
 
     Only bytes cross the return pipe; no pickle is accepted from the child.
@@ -377,22 +413,23 @@ def collect_issue_signing_snapshot(reader: GitHubIssueReader, issued_at: str,
     """
     _require_source(type(reader) is GitHubIssueReader, "unsupported issue reader")
     context = multiprocessing.get_context("fork")
-    receiver, sender = context.Pipe(duplex=False)
+    receiver, sender = os.pipe()
     process = context.Process(target=_issue_snapshot_child,
-                              args=(sender, reader, issued_at, excluded_comment_id), daemon=False)
+                              args=((receiver, sender), reader, issued_at, excluded_comment_id, approval_body), daemon=False)
     try:
         process.start()
-        sender.close()
-        _require_source(receiver.poll(GITHUB_OPERATION_SECONDS), "issue verification timed out; no authority was issued")
-        content = receiver.recv_bytes(GITHUB_SNAPSHOT_BYTES + 3)
+        os.close(sender)
+        sender = -1
+        content = _issue_reader_bytes(receiver)
         _require_source(content.startswith(b"OK\n"), "issue verification failed; no authority was issued")
         return json.loads(content[3:].decode("utf-8"), object_pairs_hook=_github_json_object,
                           parse_constant=_github_json_constant, parse_float=_github_json_float)
     except (OSError, EOFError, ValueError):
         raise SourceAccessError("issue verification failed; no authority was issued") from None
     finally:
-        receiver.close()
-        sender.close()
+        os.close(receiver)
+        if sender >= 0:
+            os.close(sender)
         _stop_issue_reader(process)
 
 
@@ -418,12 +455,7 @@ def _credential_output(process: subprocess.Popen, deadline: float) -> str:
     return credential
 
 
-def github_credential_for_user(uid: int) -> str:
-    """Read existing gh authentication as that user; never execute gh as root.
-
-    The token is only data for the fixed TLS peer, not proof of issue approval.
-    Credential values never enter argv, logs, errors or a persistent artifact.
-    """
+def _github_user_context(uid: int) -> tuple[Any, dict[str, str], dict[str, Any]]:
     _require_source(type(uid) is int and uid > 0, "GitHub authentication requires a non-root owner")
     account = pwd.getpwuid(uid)
     environment = {"HOME": account.pw_dir, "USER": account.pw_name, "LOGNAME": account.pw_name,
@@ -431,6 +463,16 @@ def github_credential_for_user(uid: int) -> str:
                    "GH_PROMPT_DISABLED": "1", "GH_HOST": "github.com"}
     identity = {"user": uid, "group": account.pw_gid, "extra_groups": []} if os.geteuid() == 0 else {}
     _require_source(os.geteuid() in (0, uid), "GitHub authentication user mismatch")
+    return account, environment, identity
+
+
+def github_credential_for_user(uid: int) -> str:
+    """Read existing gh authentication as that user; never execute gh as root.
+
+    The token is only data for the fixed TLS peer, not proof of issue approval.
+    Credential values never enter argv, logs, errors or a persistent artifact.
+    """
+    account, environment, identity = _github_user_context(uid)
     # #aidevops:trust-boundary — Popen drops all root/group authority in its
     # fork/exec implementation BEFORE env resolves or executes user-managed gh.
     process = subprocess.Popen(  # nosec B603 -- fixed argv; user/group drop precedes exec
@@ -448,6 +490,37 @@ def github_credential_for_user(uid: int) -> str:
         process.wait(timeout=2)
         if process.stdout is not None:
             process.stdout.close()
+
+
+def github_issue_action(uid: int, reader: GitHubIssueReader, action: str, body: bytes = b"") -> bool:
+    """Unprivileged mutation transport. Its exit status NEVER proves approval."""
+    _require_source(type(reader) is GitHubIssueReader and len(body) <= MAX_REQUEST_BYTES,
+                    "invalid issue action")
+    account, environment, identity = _github_user_context(uid)
+    environment["AIDEVOPS_SESSION_ORIGIN"] = "interactive"
+    wrapper = str(Path(account.pw_dir) / ".aidevops" / "agents" / "scripts" / "gh-write-helper.sh")
+    commands = {
+        "lock": ["/usr/bin/env", "gh", "issue", "lock", str(reader.number), "--repo", reader.repository, "--reason", "resolved"],
+        "unlock": ["/usr/bin/env", "gh", "issue", "unlock", str(reader.number), "--repo", reader.repository],
+        "publish": ["/usr/bin/env", "bash", wrapper, "issue", "comment", str(reader.number),
+                    "--repo", reader.repository, "--body-file", "-"],
+    }
+    _require_source(action in commands, "unsupported issue action")
+    # #aidevops:trust-boundary — execute wrappers only after dropping privilege;
+    # the broker independently reads GitHub over trusted TLS before granting.
+    process = subprocess.Popen(  # nosec B603 -- enumerated user-only operations, never a caller command
+        commands[action], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=account.pw_dir, env=environment, close_fds=True, **identity,
+    )
+    try:
+        process.communicate(input=body, timeout=20)
+        return process.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=2)
 
 
 @dataclass(frozen=True)
@@ -532,11 +605,10 @@ def _run(command: list[str], *, input_bytes: bytes | None = None) -> subprocess.
     if command and command[0] == GIT:
         # #aidevops:trust-boundary — even ls-files runs core.fsmonitor. Never
         # execute repository hooks or inherit a caller's Git scope as the broker.
-        command = [GIT, "--no-pager", "-c", "core.fsmonitor=false",
+        command = [GIT, "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false",
                    "-c", "core.hooksPath=/dev/null", *command[1:]]
-        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                            "GIT_OPTIONAL_LOCKS": "0"})
+        environment = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
+                       "GIT_CONFIG_GLOBAL": os.devnull, "GIT_OPTIONAL_LOCKS": "0"}
     try:
         return subprocess.run(  # nosec B603 -- fixed system binary allowlist, argv only, Git hooks disabled
             command,
@@ -582,6 +654,237 @@ def atomic_write(
             os.unlink(temp_name)
         except FileNotFoundError:
             pass
+
+
+def _private_descriptor_acl_safe(descriptor: int) -> bool:
+    # POSIX ACL masks are covered by the mode check. Darwin extended ACLs can
+    # independently grant access even at 0600/0700; inspect the held object.
+    if sys.platform != "darwin":
+        return True
+    library = ctypes.CDLL(None, use_errno=True)
+    library.acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
+    library.acl_get_fd_np.restype = ctypes.c_void_p
+    library.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
+    library.acl_to_text.restype = ctypes.c_void_p
+    library.acl_free.argtypes = [ctypes.c_void_p]
+    ctypes.set_errno(0)
+    acl = library.acl_get_fd_np(descriptor, 0x100)  # ACL_TYPE_EXTENDED, Darwin SDK sys/acl.h
+    if not acl:
+        return ctypes.get_errno() in (2, 93)  # ENOENT/ENOATTR: no ACL on a valid held descriptor
+    text = None
+    try:
+        length = ctypes.c_ssize_t()
+        text = library.acl_to_text(acl, ctypes.byref(length))
+        if not text or not 0 <= length.value <= 65536:
+            return False
+        return ctypes.string_at(text, length.value).rstrip(b"\x00\r\n\t ") in (b"", b"!#acl 1")
+    finally:
+        if text:
+            library.acl_free(text)
+        library.acl_free(acl)
+
+
+@contextmanager
+def protected_key_descriptor(path: Path, owner_uid: int) -> Iterator[int]:
+    """Hold the validated original key object even if its pathname is replaced."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise SourceAccessError("signing key is unavailable or unsafe") from None
+    try:
+        metadata = os.fstat(descriptor)
+        _require_source(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == owner_uid
+                        and metadata.st_nlink == 1 and metadata.st_mode & 0o077 == 0,
+                        "issue signing key ownership or permissions are unsafe")
+        _require_source(_private_descriptor_acl_safe(descriptor), "signing key has an unexpected extended ACL")
+        _require_source(metadata.st_size <= 32768, "unsupported signing key size")
+        content = os.read(descriptor, 32769)
+        lines = content.strip().splitlines()
+        _require_source(len(content) <= 32768 and len(lines) >= 3
+                        and lines[0] == b"-----BEGIN OPENSSH PRIVATE KEY-----"
+                        and lines[-1] == b"-----END OPENSSH PRIVATE KEY-----", "unsupported signing key format")
+        binary = base64.b64decode(b"".join(lines[1:-1]), validate=True)
+        _require_source(binary.startswith(b"openssh-key-v1\x00\x00\x00\x00\x04none\x00\x00\x00\x04none\x00\x00\x00\x00\x00\x00\x00\x01"),
+                        "signing requires one unencrypted, root-protected OpenSSH key")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        yield descriptor
+        final = os.fstat(descriptor)
+        current = path.lstat()
+        fields = ("st_dev", "st_ino", "st_uid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        _require_source((current.st_dev, current.st_ino) == (metadata.st_dev, metadata.st_ino)
+                        and all(getattr(final, name) == getattr(metadata, name) for name in fields),
+                        "signing key changed during approval")
+    except (OSError, ValueError):
+        raise SourceAccessError("signing key is unavailable or unsafe") from None
+    finally:
+        os.close(descriptor)
+
+
+def _descriptor_key_command(descriptor: int, arguments: list[str], content: bytes = b"") -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    environment = {"PATH": "/usr/bin:/bin", "HOME": "/var/empty", "LC_ALL": "C", "SSH_ASKPASS_REQUIRE": "never"}
+    try:
+        result = subprocess.run(  # nosec B603 -- fixed system signer; descriptor-pinned key and no askpass/agent environment
+            [SSH_KEYGEN, *arguments], input=content, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, pass_fds=(descriptor,), check=False, timeout=15,
+        )
+        _require_source(result.returncode == 0, "descriptor-bound signing operation failed")
+        return result.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        raise SourceAccessError("descriptor-bound signing operation failed") from None
+
+
+def descriptor_public_key(descriptor: int) -> bytes:
+    parts = _descriptor_key_command(descriptor, ["-y", "-P", "", "-f", f"/dev/fd/{descriptor}"]).split()
+    _require_source(len(parts) >= 2 and parts[0] == b"ssh-ed25519", "approval requires an Ed25519 signing key")
+    return b" ".join(parts[:2])
+
+
+def descriptor_signature(config: Config, descriptor: int, namespace: str, content: bytes) -> str:
+    _require_source(namespace in (SIGNATURE_NAMESPACE, ISSUE_SIGNATURE_NAMESPACE), "unsupported signing namespace")
+    signing_root = root_data_directory(config.config_dir / "private" / "signing", config.trust_uid)
+    _require_source(len(list(signing_root.iterdir())) < 128, "private signing workspace requires cleanup")
+    # macOS /dev/fd shares offsets across ssh-keygen's repeated private-key opens.
+    # Copy only from the held object, inside immutable root-owned ancestry; the
+    # signed payload stays on stdin and no caller-selected scratch path is used.
+    with tempfile.TemporaryDirectory(prefix="key-", dir=signing_root) as temporary:
+        key_path = Path(temporary) / "key"
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        key = os.read(descriptor, 32769)
+        _require_source(len(key) <= 32768, "signing key changed")
+        atomic_write(key_path, key, 0o600, config.trust_uid)
+        return _descriptor_key_command(descriptor,
+                                       ["-Y", "sign", "-f", str(key_path), "-n", namespace, "-q", "-"],
+                                       content).decode("ascii")
+
+
+def root_data_directory(path: Path, owner_uid: int, mode: int = 0o700) -> Path:
+    """Create only under trusted existing ancestry; never chown foreign state."""
+    parent = path.parent.resolve(strict=False)
+    existing = parent
+    while not existing.exists():
+        existing = existing.parent
+    for ancestor in (existing, *existing.parents):
+        metadata = ancestor.stat()
+        _require_source(metadata.st_uid in (0, owner_uid) and metadata.st_mode & 0o022 == 0,
+                        "broker state ancestry is unsafe")
+    if not path.parent.exists():
+        root_data_directory(path.parent, owner_uid, 0o755)
+    path.mkdir(mode=mode, exist_ok=True)
+    _require_source(_trusted_directory(path, owner_uid), "broker state ownership or permissions are unsafe")
+    if mode == 0o700:
+        _require_source(path.stat().st_mode & 0o077 == 0, "broker private directory is not private")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            _require_source(_private_descriptor_acl_safe(descriptor), "broker private directory has an extended ACL")
+        finally:
+            os.close(descriptor)
+    return path
+
+
+def private_bundle_parent(config: Config, uid: int) -> Path:
+    _require_source(type(uid) is int and uid > 0, "bundle requires a non-root owner")
+    parent = root_data_directory(config.state_dir / "bundles" / str(uid), config.trust_uid, 0o755)
+    if uid == config.trust_uid:
+        os.chmod(parent, 0o700)
+        return parent
+    if sys.platform == "darwin":
+        command = ["/bin/chmod", "-E", str(parent)]
+        content = f"user:{uid} allow list,search,readattr,readextattr,readsecurity\n".encode("ascii")
+    else:
+        _require_source(sys.platform.startswith("linux"), "private bundle ACLs are unsupported on this platform")
+        command = ["/usr/bin/setfacl", "--set", f"u::rwx,u:{uid}:r-x,g::---,m::r-x,o::---", "--", str(parent)]
+        content = b""
+    executable = Path(command[0]).resolve(strict=True)
+    _require_source(_trusted_file(executable, 0) and all(_trusted_directory(item, 0) for item in executable.parents),
+                    "private publication requires a trusted system ACL tool")
+    result = subprocess.run(  # nosec B603 -- fixed platform ACL executable and numeric UID; no caller command
+        command, input=content, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, check=False, timeout=5,
+    )
+    _require_source(result.returncode == 0, "private bundle ACL setup failed")
+    if sys.platform == "darwin":
+        os.chmod(parent, 0o700)
+    return parent
+
+
+def atomic_bundle_directory(config: Config, uid: int, approval_id: str) -> Path:
+    _require_source(type(uid) is int and uid > 0 and re.fullmatch(r"[a-f0-9]{64}", approval_id) is not None,
+                    "invalid bundle identity")
+    return config.state_dir / "bundles" / str(uid) / approval_id
+
+
+def bundle_journal_path(config: Config, uid: int, proposal_id: str) -> Path:
+    _require_source(type(uid) is int and uid > 0 and re.fullmatch(r"[a-f0-9]{64}", proposal_id) is not None,
+                    "invalid transaction identity")
+    directory = root_data_directory(config.config_dir / "transactions" / str(uid), config.trust_uid)
+    return directory / f"{proposal_id}.json"
+
+
+@contextmanager
+def bundle_transaction_lock(config: Config, uid: int, proposal_id: str, kind: str) -> Iterator[None]:
+    _require_source(kind in ("operation", "commit"), "invalid transaction lock")
+    path = bundle_journal_path(config, uid, proposal_id).with_suffix(f".{kind}.lock")
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        _require_source(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == config.trust_uid
+                        and metadata.st_mode & 0o077 == 0 and metadata.st_nlink == 1, "unsafe transaction lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    except BlockingIOError:
+        raise SourceAccessError("bundle transaction is already in progress") from None
+    finally:
+        os.close(descriptor)
+
+
+def withdraw_atomic_bundle(config: Config, uid: int, approval_id: str) -> bool:
+    if len(approval_id) != 64 or type(uid) is not int or uid <= 0:
+        return False
+    directory = atomic_bundle_directory(config, uid, approval_id)
+    if not os.path.lexists(directory):
+        return _trusted_file(config.state_dir / "revocations" / str(uid) / f"{approval_id}.json", config.trust_uid)
+    _require_source(_trusted_directory(directory, config.trust_uid), "bundle directory is unsafe")
+    original = approval_id
+    try:
+        receipt_path = directory / "receipt.json"
+        _require_source(_trusted_file(receipt_path, config.trust_uid), "bundle receipt is unsafe")
+        _require_source(receipt_path.stat().st_size <= 1024 * 1024, "bundle receipt exceeds the limit")
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        candidate = receipt.get("payload", {}).get("original_proposal_id", "")
+        if isinstance(candidate, str) and re.fullmatch(r"[a-f0-9]{64}", candidate):
+            original = candidate
+    except (OSError, ValueError, AttributeError, SourceAccessError):
+        pass  # Revocation must also withdraw a corrupted, root-owned bundle.
+    with bundle_transaction_lock(config, uid, original, "commit"):
+        revocations = root_data_directory(config.state_dir / "revocations" / str(uid), config.trust_uid, 0o755)
+        atomic_write(revocations / f"{approval_id}.json", b'{"revoked":true}\n', 0o644, config.trust_uid)
+        private = root_data_directory(config.state_dir / ".revoked" / str(uid), config.trust_uid)
+        destination = private / f"{approval_id}-{secrets.token_hex(16)}"
+        os.replace(directory, destination)
+        journal_path = bundle_journal_path(config, uid, original)
+        try:
+            if journal_path.exists():
+                journal = _read_request_record(journal_path, config.trust_uid)
+                if journal.get("approval_id") == approval_id:
+                    journal["state"] = "REVOKED"
+                    atomic_write(journal_path, canonical_json(journal), 0o600, config.trust_uid)
+        finally:
+            shutil.rmtree(destination)
+    return True
+
+
+def manifest_receipt_paths(config: Config, uid: int) -> list[Path]:
+    result = []
+    legacy = config.state_dir / "approvals" / str(uid)
+    if _trusted_directory(legacy, config.trust_uid):
+        result.extend(sorted(legacy.glob("*.json")))
+    bundles = config.state_dir / "bundles" / str(uid)
+    if _trusted_directory(bundles, config.trust_uid):
+        for candidate in sorted(bundles.iterdir()):
+            if re.fullmatch(r"[a-f0-9]{64}", candidate.name) and _trusted_directory(candidate, config.trust_uid):
+                result.append(candidate / "receipt.json")
+    return result
 
 
 def _require_source(condition: bool, message: str) -> None:
@@ -725,6 +1028,32 @@ def secure_source_content(path: str) -> tuple[bytes, str]:
     finally:
         os.close(descriptor)
     return bytes(content), digest.hexdigest()
+
+
+def require_source_only_content(content: bytes) -> None:
+    """Reject binary data and credential indicators, without returning matched bytes.
+
+    This is conservative screening, not proof that arbitrary text has no secret.
+    The tracked-path, exact-byte binding and explicit human review remain required;
+    no content finding is overridable by the basename-only approval mechanism.
+    """
+    _require_source(len(content) <= MAX_SOURCE_BYTES, "source exceeds the classification limit")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise SourceAccessError("only UTF-8 source text can be approved") from None
+    _require_source(not any(ord(character) < 32 and character not in "\t\n\r" for character in text),
+                    "binary or control-bearing source cannot be approved")
+    patterns = (
+        r"-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----",
+        r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b",
+        r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{15,})\b",
+        r"(?i)\b(?:https?|postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s/:]+:[^\s/@]+@",
+        r'''(?im)(?:^|[\s{,])['"]?(?:[a-z0-9]+_)*(?:password|passwd|secret|token|api_key|private_key)['"]?\s*[:=]\s*['"][^'"\r\n$]+['"]''',
+        r"(?im)^\s*(?:export\s+)?(?:[a-z0-9]+_)*(?:password|passwd|secret|token|api_key|private_key)\s*=\s*[a-z0-9+/][^\s;]*",
+    )
+    _require_source(not any(re.search(pattern, text) for pattern in patterns),
+                    "credential indicators cannot be approved as a basename-only source exception")
 
 
 def request_directory(config: Config, home: Path) -> Path:
@@ -1021,6 +1350,28 @@ def _proposal_records(directory: Path) -> list[Path]:
     return sorted(records)
 
 
+def proposal_candidate_paths(paths: list[str]) -> tuple[str, ...]:
+    """Include conventional existing regression tests, never directory grants."""
+    result = list(paths)
+    for raw in paths:
+        path, _repo, _relative = tracked_source_identity(raw)
+        source = Path(path)
+        candidate = source.parent / "tests" / f"test-{source.name}"
+        if not source.name.startswith("test-") and candidate.is_file():
+            test_path = canonical_tracked_source(str(candidate))
+            if test_path not in result:
+                result.append(test_path)
+    _require_source(len(result) <= MAX_MANIFEST_ENTRIES, "source and regression-test manifest exceeds the limit")
+    return tuple(result)
+
+
+def classify_source_snapshot(snapshot: dict[str, Any]) -> None:
+    for entry in snapshot["entries"]:
+        content, digest = secure_source_content(entry["path"])
+        _require_source(digest == entry["content_sha256"], "source changed during classification")
+        require_source_only_content(content)
+
+
 def create_source_proposal(
     config: Config, spec: ManifestRequestSpec, *, issue_snapshot_sha256: str,
     context_socket: str | None = None,
@@ -1040,6 +1391,7 @@ def create_source_proposal(
         "nonce": secrets.token_hex(16), "issue_snapshot_sha256": issue_snapshot_sha256,
         **_proposal_source_snapshot(spec),
     }
+    classify_source_snapshot(body)
     if context_socket is not None:
         body["runtime_context"] = query_source_context(
             context_socket, spec.session_id, body["repository"]["root"], spec.uid,
@@ -1385,11 +1737,10 @@ _APPROVAL_PATH_READERS = {
 def list_approvals(config: Config, *, uid: int, now: int | None = None) -> list[dict[str, Any]]:
     checked_at = int(time.time() if now is None else now)
     results: list[dict[str, Any]] = []
-    directory = config.state_dir / "approvals" / str(uid)
-    if not directory.is_dir():
-        return results
-    for receipt_path in sorted(directory.glob("*.json")):
+    for receipt_path in manifest_receipt_paths(config, uid):
         try:
+            if not _trusted_file(receipt_path, config.trust_uid) or receipt_path.stat().st_size > 1024 * 1024:
+                continue
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             payload = receipt["payload"]
             path = _APPROVAL_PATH_READERS[payload["schema"]](payload)

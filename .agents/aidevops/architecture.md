@@ -105,6 +105,17 @@ shell execution. Regression coverage lives in
 `test-aidevops-update-transaction.sh`, `test-setup-source-access-broker.sh`,
 `test-source-access-helper.py`, and `test-source-access-approval.mjs`.
 
+Bundled issue/source approval establishes the linked worktree before signing;
+there is no transferable worktree handoff. Durable proposals are powerless.
+The human broker refreshes and displays current hashes before explicit consent,
+then rechecks native runtime/session and worktree identities before independent
+issue and source signatures. A private transaction journal serializes publication,
+cancellation and recovery; receipt and immutable snapshots publish through one
+atomic directory rename. Neither elapsed proposal age nor a retry renews consent.
+A replaced context, changed post-confirmation bytes, expired/cancelled grant or
+unsupported broker protocol requires genuinely new consent, never a guard bypass.
+Workflow, limits and recovery: `reference/source-access-bundles.md`.
+
 Examples: version bumping, file discovery, credential lookup, schema validation,
 and safety guards belong in tools; dispatch priority, diagnosis, decomposition,
 and trade-offs remain model judgment. See `reference/progressive-disclosure.md`

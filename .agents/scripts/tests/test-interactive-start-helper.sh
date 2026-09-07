@@ -172,5 +172,42 @@ for invalid_mode in missing malformed unsafe-canonical unregistered duplicate fa
 	fi
 done
 
-printf 'PASS interactive issue start enters only the verified linked worktree\n'
+# Reuse the existing isolated helper directory to test the source-preflight
+# branch without executing a real broker, contacting GitHub or invoking sudo.
+cp "$helper" "${stub_dir}/interactive-start-helper.sh" || fail "could not copy fixture helper"
+export SOURCE_POLICY_HELPER="${scripts_dir}/canonical-write-policy-helper.py"
+cat >"${stub_dir}/canonical-write-policy-helper.py" <<'STUB'
+import os, runpy, sys
+sys.path.insert(0, os.path.dirname(os.environ["SOURCE_POLICY_HELPER"]))
+runpy.run_path(os.environ["SOURCE_POLICY_HELPER"], run_name="__main__")
+STUB
+cat >"${stub_dir}/source-access-helper.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'proposal args=%s\n' "$*" >>"$CALL_LOG"
+printf '%064d\n' 0
+STUB
+chmod +x "${stub_dir}/source-access-helper.sh"
+: >"$call_log"
+proposal_output=$(
+	cd "$canonical_root" || exit 1
+	PRE_EDIT_MODE=valid PATH="${stub_dir}:$PATH" \
+		AIDEVOPS_OPENCODE_SESSION_ID=ses_fixture_123456 AIDEVOPS_SOURCE_CONTEXT_SOCKET=/fixture/socket \
+		"${stub_dir}/interactive-start-helper.sh" --issue 45 --repo owner/repo --task "prepare source" \
+		--source-path src/example.sh --source-path tests/test-example.sh </dev/null
+) || fail "source preflight failed"
+[[ "$proposal_output" == *"SOURCE_PROPOSAL_READY="* && "$proposal_output" == *"--source-proposal"* ]] ||
+	fail "source preflight omitted stable proposal/ceremony command"
+assert_log_line "proposal args=propose --session ses_fixture_123456 --repo owner/repo --issue 45 --reason secret-bearing basename --context-socket /fixture/socket --path ${linked_worktree}/src/example.sh --path ${linked_worktree}/tests/test-example.sh"
+if grep -q '^claim \|^full-loop ' "$call_log"; then
+	fail "powerless source preflight claimed or started implementation"
+fi
+: >"$call_log"
+if AIDEVOPS_OPENCODE_SESSION_ID="" OPENCODE_SESSION_ID="" AIDEVOPS_SOURCE_CONTEXT_SOCKET="" PATH="${stub_dir}:$PATH" \
+	"${stub_dir}/interactive-start-helper.sh" --issue 45 --repo owner/repo --task "missing context" \
+	--source-path src/example.sh </dev/null >/dev/null 2>&1; then
+	fail "source preflight accepted missing runtime context"
+fi
+[[ ! -s "$call_log" ]] || fail "missing-context preflight invoked lifecycle helpers"
+
+printf 'PASS interactive issue start enters only the verified linked worktree; source preflight remains powerless\n'
 exit 0

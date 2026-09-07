@@ -500,12 +500,67 @@ function manifestCliVerifier({ root, stateDir, key, sessionId, now, socketPath }
 function revokeManifestFixture(stateDir, approvalId) {
   const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
   const script = 'import runpy,sys,os; from pathlib import Path; h=runpy.run_path(sys.argv[1]); '
-    + 'cfg=h["Config"](state_dir=Path(sys.argv[2]),trust_uid=os.getuid()); '
+    + 'cfg=h["Config"](config_dir=Path(sys.argv[2]).parent/"cli-config",state_dir=Path(sys.argv[2]),trust_uid=os.getuid()); '
     + 'h["revoke_approval"](cfg,approval_id=sys.argv[3],uid=os.getuid())';
   execFileSync("python3", ["-I", "-B", "-c", script, helper, stateDir, approvalId], { timeout: 15000 });
 }
 
-async function checkSignedManifest(inLinkedWorktree, bound = false) {
+function manifestFixtureStorage(stateDir, uid, approvalId, atomic) {
+  const bundle = join(stateDir, "bundles", String(uid), approvalId);
+  const layout = {
+    false: { snapshots: join(stateDir, "snapshots", String(uid)), receipts: join(stateDir, "approvals", String(uid)),
+      name: `${approvalId}.json`, prefix: `${approvalId}-`, fields: {} },
+    true: { snapshots: bundle, receipts: bundle, name: "receipt.json", prefix: "",
+      fields: { snapshot_layout: "atomic-directory/v1" } },
+  }[String(atomic)];
+  mkdirSync(layout.snapshots, { recursive: true, mode: 0o755 });
+  mkdirSync(layout.receipts, { recursive: true, mode: 0o755 });
+  if (atomic) mkdirSync(join(stateDir, "revocations", String(uid)), { recursive: true, mode: 0o755 });
+  return {
+    fields: layout.fields,
+    receiptPath: join(layout.receipts, layout.name),
+    snapshotPath: (entryId) => join(layout.snapshots, `${layout.prefix}${entryId}.source`),
+  };
+}
+
+async function issueBundleFixture(root, key, stateDir, proposalId) {
+  const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+  // Real issuer, signatures, journals and native runtime IPC; only GitHub and
+  // root ownership are synthetic. No installed broker or actual credential is used.
+  const script = `import runpy,sys,json,os,shutil,subprocess
+from pathlib import Path
+from unittest.mock import patch
+h=runpy.run_path(sys.argv[1]); c=h['_SOURCE_CORE']; root=Path(sys.argv[2]); uid=os.getuid()
+cfg=c.Config(config_dir=root/'issuer-config',state_dir=Path(sys.argv[4]),request_root=root/'requests',trust_uid=uid)
+cfg.private_key.parent.mkdir(parents=True,mode=0o700)
+shutil.copyfile(sys.argv[3],cfg.private_key); cfg.private_key.chmod(0o600); h['setup_key_material'](cfg)
+home=root/'fixture-home'; key=home/'.aidevops'/'approval-keys'/'private'/'approval.key'
+key.parent.mkdir(parents=True,mode=0o700)
+subprocess.run([h['SSH_KEYGEN'],'-q','-t','ed25519','-N','','-f',str(key)],check=True)
+actor={'id':7,'node_id':'U_fixture','login':'fixture','type':'User'}; created='2026-09-01T12:00:00Z'
+issue={'id':1234,'node_id':'I_fixture','number':123,'user':actor,'author_association':'OWNER','created_at':created,
+       'title':'Fixture scope','body':'Synthetic issue acceptance','state':'open','locked':True,
+       'active_lock_reason':'resolved','labels':[],'assignees':[actor],'milestone':None}
+comments=[]; timeline=[{'id':20,'event':'locked','created_at':created,'actor':actor}]
+def action(uid,reader,operation,body=b''):
+    if operation=='publish': comments.append({'id':99,'node_id':'C_fixture','user':actor,'author_association':'OWNER',
+                                              'created_at':created,'body':body.decode('utf-8')})
+confirmed=[]; spec=h['ApprovalSpec'](sys.argv[5],home,uid,3600,1800000000,lambda scope: confirmed.append(scope) is None)
+with patch.object(c,'github_credential_for_user',return_value='synthetic-fixture'), \\
+     patch.object(c.GitHubIssueReader,'issue',return_value=issue), \\
+     patch.object(c.GitHubIssueReader,'collection',side_effect=lambda kind: comments if kind=='comments' else timeline), \\
+     patch.object(c,'github_issue_action',side_effect=action):
+    payload=h['approve_bundle'](cfg,spec,'fixture/repo',123)
+assert len(confirmed)==1 and len(comments)==1
+receipt=c.manifest_receipt_paths(cfg,uid)[0]; result=json.loads(receipt.read_text()); result['receiptPath']=str(receipt)
+print(json.dumps(result))
+`;
+  const { stdout } = await promisify(execFile)("python3", ["-I", "-B", "-c", script,
+    helper, root, key, stateDir, proposalId], { timeout: 20000 });
+  return JSON.parse(stdout);
+}
+
+async function checkSignedManifest(inLinkedWorktree, bound = false, atomic = false) {
   const protocol = manifestFixtureProtocol(bound);
   const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
   mkdirSync(tempParent, { recursive: true });
@@ -581,16 +636,13 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
         join(root, "requests"), sessionId, JSON.stringify(paths), env.AIDEVOPS_SOURCE_CONTEXT_SOCKET], { timeout: 15000 });
       ({ id: proposalId, body: proposal } = JSON.parse(result.stdout));
     }
-    const approvalId = bound ? proposalId : createHash("sha256")
+    let approvalId = bound ? proposalId : createHash("sha256")
       .update([sessionId, String(uid), repo, SOURCE_ACCESS_REASON, ...paths].join("\0"), "utf8")
       .digest("hex");
-    const snapshotDir = join(stateDir, "snapshots", String(uid));
-    const receiptDir = join(stateDir, "approvals", String(uid));
-    mkdirSync(snapshotDir, { recursive: true, mode: 0o755 });
-    mkdirSync(receiptDir, { recursive: true, mode: 0o755 });
-    const entries = paths.map((filePath, index) => {
+    const storage = manifestFixtureStorage(stateDir, uid, approvalId, atomic);
+    let entries = paths.map((filePath, index) => {
       const entryId = createHash("sha256").update(filePath, "utf8").digest("hex").slice(0, 32);
-      const snapshotPath = join(snapshotDir, `${approvalId}-${entryId}.source`);
+      const snapshotPath = storage.snapshotPath(entryId);
       const content = readFileSync(filePath);
       writeFileSync(snapshotPath, content, { mode: 0o444 });
       return {
@@ -600,8 +652,9 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
         snapshot_path: snapshotPath,
       };
     });
-    const payload = {
+    let payload = {
       schema: protocol.payloadSchema,
+      ...storage.fields,
       ...(bound ? { proposal, proposal_id: proposalId, issue_snapshot_sha256: proposal.issue_snapshot_sha256 } : {}),
       approval_id: approvalId,
       request_id: approvalId,
@@ -619,13 +672,22 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
     execFileSync("/usr/bin/ssh-keygen", [
       "-Y", "sign", "-f", key, "-n", "aidevops-source-access-v1", payloadPath,
     ]);
-    const signature = readFileSync(`${payloadPath}.sig`, "utf8");
-    const receiptPath = join(receiptDir, `${approvalId}.json`);
+    let signature = readFileSync(`${payloadPath}.sig`, "utf8");
+    let receiptPath = storage.receiptPath;
     writeFileSync(
       receiptPath,
       JSON.stringify({ schema: protocol.receiptSchema, payload, signature }),
       { mode: 0o644 },
     );
+    if (atomic) {
+      // Remove the synthetic grant first: it must not mask an invalid issuer
+      // receipt or let either consumer succeed through a second capability.
+      rmSync(dirname(receiptPath), { recursive: true, force: true });
+      ({ payload, signature, receiptPath } = await issueBundleFixture(root, key, stateDir, proposalId));
+      approvalId = payload.approval_id;
+      entries = payload.entries;
+      proposal = payload.proposal;
+    }
     const baseArgs = {
       sessionId,
       reason: SOURCE_ACCESS_REASON,
@@ -753,6 +815,7 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
 test("one signed manifest authorizes only three exact repository-bound paths", () => checkSignedManifest(false));
 test("a canonical app context consumes its exact linked-worktree manifest without per-path requests", () => checkSignedManifest(true));
 test("a V3 manifest binds native proposal context to the consuming runtime and fresh session generation", () => checkSignedManifest(true, true));
+test("an atomic V3 manifest is consumed by CLI and Read and withdrawn as one bundle", () => checkSignedManifest(true, true, true));
 
 test("one approval survives verified Write, Edit, and apply_patch cycles", () => {
   const fixture = mutationFixture();

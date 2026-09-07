@@ -536,18 +536,33 @@ def _manifest_verification_policy(receipt: dict[str, Any], payload: Any) -> tupl
     return minimum_entries, identify_scope
 
 
+def _manifest_storage(config: Config, spec: VerificationSpec, payload: dict[str, Any], receipt_path: Path) -> bool:
+    atomic = payload.get("snapshot_layout") == _SOURCE_CORE.ATOMIC_BUNDLE_LAYOUT
+    if "snapshot_layout" in payload:
+        _require_valid_approval(atomic and payload.get("schema") == SCHEMA_BOUND_PAYLOAD)
+    approval_id = payload["approval_id"]
+    expected = (
+        _SOURCE_CORE.atomic_bundle_directory(config, spec.uid, approval_id) / "receipt.json"
+        if atomic else config.state_dir / "approvals" / str(spec.uid) / f"{approval_id}.json"
+    )
+    _require_valid_approval(receipt_path == expected and _trusted_directory(receipt_path.parent, config.trust_uid))
+    revocations = config.state_dir / "revocations" / str(spec.uid)
+    if atomic or revocations.exists():
+        _require_valid_approval(_trusted_directory(revocations, config.trust_uid))
+        _require_valid_approval(f"{approval_id}.json" not in {path.name for path in revocations.iterdir()})
+    return atomic
+
+
 def _verify_manifest_approval(
     config: Config,
     spec: VerificationSpec,
     checked_at: int,
 ) -> bool:
-    approvals_dir = config.state_dir / "approvals" / str(spec.uid)
-    if not _trusted_directory(approvals_dir, config.trust_uid):
-        return False
-    for receipt_path in sorted(approvals_dir.glob("*.json")):
+    for receipt_path in _SOURCE_CORE.manifest_receipt_paths(config, spec.uid):
         try:
             if not _trusted_file(receipt_path, config.trust_uid):
                 continue
+            _require_valid_approval(receipt_path.stat().st_size <= 1024 * 1024)
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             _require_valid_approval(isinstance(receipt, dict))
             payload = receipt.get("payload")
@@ -581,7 +596,7 @@ def _verify_manifest_approval(
             approval_id = identify_scope(spec, payload, paths)
             _require_valid_approval(payload.get("approval_id") == approval_id)
             _require_valid_approval(payload.get("request_id") == approval_id)
-            _require_valid_approval(receipt_path.name == f"{approval_id}.json")
+            atomic_layout = _manifest_storage(config, spec, payload, receipt_path)
             _require_valid_approval(spec.path in paths)
             _require_valid_approval(len(raw_entries) == len(expected_entries))
             total_bytes = 0
@@ -596,10 +611,8 @@ def _verify_manifest_approval(
                 _require_valid_approval(raw_entry.get("content_sha256") == content_sha256)
                 entry_id = hashlib.sha256(expected_entry["path"].encode("utf-8")).hexdigest()[:32]
                 snapshot_path = (
-                    config.state_dir
-                    / "snapshots"
-                    / str(spec.uid)
-                    / f"{approval_id}-{entry_id}.source"
+                    _SOURCE_CORE.atomic_bundle_directory(config, spec.uid, approval_id) / f"{entry_id}.source"
+                    if atomic_layout else config.state_dir / "snapshots" / str(spec.uid) / f"{approval_id}-{entry_id}.source"
                 )
                 _require_valid_approval(raw_entry.get("snapshot_path") == str(snapshot_path))
                 _require_valid_approval(_trusted_directory(snapshot_path.parent, config.trust_uid))
@@ -635,10 +648,13 @@ def _snapshot_belongs_to_approval(path: Path, directory: Path, approval_id: str)
 def revoke_approval(config: Config, *, approval_id: str, uid: int) -> None:
     if not ID_PATTERN.fullmatch(approval_id):
         raise SourceAccessError("invalid approval identifier")
+    withdrew_atomic = _SOURCE_CORE.withdraw_atomic_bundle(config, uid, approval_id)
     receipt_path = config.state_dir / "approvals" / str(uid) / f"{approval_id}.json"
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
+        if withdrew_atomic:
+            return
         raise SourceAccessError("source-access approval was not found") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise SourceAccessError("source-access approval is malformed") from exc
@@ -658,6 +674,289 @@ def revoke_approval(config: Config, *, approval_id: str, uid: int) -> None:
                 snapshot_path.unlink()
         except FileNotFoundError:
             pass
+
+
+class _BundleApproval:
+    """Human-confirmed issue/source transaction; transport callbacks confer no authority."""
+
+    def __init__(self, config: Config, spec: ApprovalSpec, reader: Any) -> None:
+        self.config = config
+        self.spec = spec
+        self.reader = reader
+        self.core = _SOURCE_CORE
+        self.path = self.core.bundle_journal_path(config, spec.expected_uid, spec.request_id)
+
+    def now(self) -> int:
+        return int(time.time() if self.spec.now is None else self.spec.now)
+
+    def check(self, condition: bool, message: str) -> None:
+        self.core._require_source(condition, message)
+
+    def save(self, row: dict[str, Any]) -> None:
+        # Cancellation and revocation use the commit lock without waiting for
+        # an in-flight human prompt or remote publication. Never revive their
+        # terminal record with an older copy held by the operation owner.
+        with self.core.bundle_transaction_lock(self.config, self.spec.expected_uid, self.spec.request_id, "commit"):
+            current = self.load()
+            self.check(current is None or current.get("state") not in ("CANCELLED", "REVOKED"),
+                       "proposal is cancelled or revoked")
+            self._write_locked(row)
+
+    def _write_locked(self, row: dict[str, Any]) -> None:
+        """Persist only while the caller holds the transaction commit lock."""
+        content = canonical_json(row)
+        self.check(len(content) <= self.core.MAX_REQUEST_BYTES, "bundle transaction metadata exceeds the limit")
+        atomic_write(self.path, content, 0o600, self.config.trust_uid)
+
+    def load(self) -> dict[str, Any] | None:
+        if not self.path.exists():
+            return None
+        row = self.core._read_request_record(self.path, self.config.trust_uid)
+        self.check(row.get("proposal_id") == self.spec.request_id and row.get("uid") == self.spec.expected_uid,
+                   "transaction identity mismatch")
+        self.check(row.get("state") in ("CANCELLED", "REVOKED") or
+                   (row.get("repository") == self.reader.repository and row.get("issue") == self.reader.number),
+                   "a proposal cannot be rebound to another issue")
+        return row
+
+    def current_source(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        body = self.core.load_source_proposal(self.config, self.spec.home, self.spec.request_id, self.spec.expected_uid)
+        entries = body.get("entries")
+        self.check(isinstance(entries, list) and 1 <= len(entries) <= MAX_MANIFEST_ENTRIES,
+                   "invalid proposed source set")
+        self.check(all(isinstance(entry, dict) and isinstance(entry.get("path"), str) for entry in entries),
+                   "invalid proposed source paths")
+        request = ManifestRequestSpec(body["session_id"], self.spec.expected_uid, self.spec.home,
+                                      tuple(entry["path"] for entry in entries), body["reason"], self.now())
+        _validate_session_id(request.session_id)
+        _validate_reason(request.reason)
+        context = self.core.revalidate_source_proposal_context(body, self.spec.expected_uid)
+        snapshot = self.core._proposal_source_snapshot(request)
+        original_repository = body.get("repository", {})
+        self.check(all(original_repository.get(key) == value for key, value in snapshot["repository"].items() if key != "head"),
+                   "worktree identity changed; new explicit context consent is required")
+        self.check([entry["path"] for entry in entries] == [entry["path"] for entry in snapshot["entries"]],
+                   "source paths cannot be silently rebound")
+        for entry in snapshot["entries"]:
+            content, digest = secure_source_content(entry["path"])
+            self.check(digest == entry["content_sha256"], "source changed during classification")
+            self.core.require_source_only_content(content)
+        return body, snapshot, context
+
+    def public_keys(self) -> tuple[str, str]:
+        validate_key_material(self.config)
+        issue_key = self.spec.home / ".aidevops" / "approval-keys" / "private" / "approval.key"
+        with self.core.protected_key_descriptor(issue_key, self.config.trust_uid) as descriptor:
+            issue_public = self.core.descriptor_public_key(descriptor).decode("ascii")
+        with self.core.protected_key_descriptor(self.config.private_key, self.config.trust_uid) as descriptor:
+            source_public = self.core.descriptor_public_key(descriptor).decode("ascii")
+        self.check(issue_public != source_public, "issue and source approval require independent keys")
+        return issue_public, source_public
+
+    def snapshot(self, issued_at: str, excluded: int | None = None) -> dict[str, Any]:
+        snapshot = self.core.collect_issue_signing_snapshot(self.reader, issued_at, excluded)
+        self.check(snapshot["lifecycle"]["locked"] is True and snapshot["lifecycle"]["lock_anchor"] is not None,
+                   "issue has no verified uninterrupted lock; no authority was issued")
+        return snapshot
+
+    def prepare(self) -> dict[str, Any]:
+        original, source, context = self.current_source()
+        issue_public, source_public = self.public_keys()
+        self.core.private_bundle_parent(self.config, self.spec.expected_uid)
+        self.core.root_data_directory(self.config.state_dir / "revocations" / str(self.spec.expected_uid), self.config.trust_uid, 0o755)
+        prepared_at = self.now()
+        issued_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(prepared_at))
+        # The helper runs as the owning user. Only the subsequent trusted REST
+        # snapshot establishes the lock; a successful exit alone is insufficient.
+        self.core.github_issue_action(self.spec.expected_uid, self.reader, "lock")
+        snapshot = self.snapshot(issued_at)
+        digest = hashlib.sha256(self.core.issue_snapshot_bytes(snapshot)).hexdigest()
+        body = {"session_id": original["session_id"], "uid": self.spec.expected_uid,
+                "reason": original["reason"], "created_at": prepared_at, "nonce": self.core.secrets.token_hex(16),
+                "issue_snapshot_sha256": digest, "runtime_context": context, **source}
+        row = {"schema": "aidevops-source-transaction/v1", "state": "PREPARED",
+               "proposal_id": self.spec.request_id, "uid": self.spec.expected_uid,
+               "repository": self.reader.repository, "issue": self.reader.number,
+               "body": body, "issue_lifecycle": snapshot["lifecycle"],
+               "issue_public": issue_public, "source_public": source_public,
+               "ttl_seconds": self.spec.ttl_seconds,
+               "approval_id": hashlib.sha256(canonical_json(body)).hexdigest()}
+        self.save(row)
+        self.check(self.spec.confirm is not None, "bundle approval requires explicit confirmation")
+        scope = {"repository": self.reader.repository, "issue": self.reader.number,
+                 "issue_snapshot_sha256": digest, "session_id": body["session_id"],
+                 "uid": self.spec.expected_uid, "runtime_context": context,
+                 "repo_root": source["repository"]["root"], "commit": source["repository"]["head"],
+                 "entries": source["entries"], "ttl_seconds": self.spec.ttl_seconds,
+                 "proposal_id": self.spec.request_id, "approval_id": row["approval_id"]}
+        if not self.spec.confirm(scope):
+            row["state"] = "CANCELLED"
+            self.save(row)
+            raise SourceAccessError("bundle approval cancelled; no signing authority was issued")
+        confirmed_at = _confirmed_timestamp(self.spec, prepared_at)
+        issued_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(confirmed_at))
+        after = self.snapshot(issued_at)
+        self.check(hashlib.sha256(self.core.issue_snapshot_bytes(after)).hexdigest() == digest,
+                   "issue scope changed during confirmation; review the refreshed proposal")
+        row.update(state="CONFIRMED", confirmed_at=confirmed_at,
+                   issue_payload={"schema": "aidevops-approval/v2", "authority": "development",
+                                  "issued_at": issued_at, "target": {"kind": "issue", "repository": self.reader.repository.lower(),
+                                                                    "number": self.reader.number},
+                                  "snapshot_sha256": digest, "pr": None, "issue": {"lifecycle": after["lifecycle"]}})
+        self.validate_source(row)
+        self.save(row)
+        return row
+
+    def validate_source(self, row: dict[str, Any]) -> None:
+        _original, source, context = self.current_source()
+        self.check(source["entries"] == row["body"]["entries"] and source["repository"] == row["body"]["repository"]
+                   and context == row["body"]["runtime_context"], "source or runtime changed after confirmation")
+        self.check(self.public_keys() == (row["issue_public"], row["source_public"]), "signing trust changed after confirmation")
+        self.check(row["confirmed_at"] <= self.now() < row["confirmed_at"] + row["ttl_seconds"],
+                   "confirmed consent expired; it cannot be renewed automatically")
+
+    def issue_signature(self, row: dict[str, Any]) -> str:
+        key = self.spec.home / ".aidevops" / "approval-keys" / "private" / "approval.key"
+        with self.core.protected_key_descriptor(key, self.config.trust_uid) as descriptor:
+            self.check(self.core.descriptor_public_key(descriptor).decode("ascii") == row["issue_public"], "issue key changed")
+            return self.core.descriptor_signature(self.config, descriptor, self.core.ISSUE_SIGNATURE_NAMESPACE,
+                                                  self.core.issue_snapshot_bytes(row["issue_payload"]))
+
+    def comment_body(self, row: dict[str, Any]) -> str:
+        payload = self.core.issue_snapshot_bytes(row["issue_payload"]).decode("utf-8")
+        return ("<!-- aidevops-signed-approval -->\n## Maintainer Approval (cryptographically signed)\n\n"
+                f"```\n{payload}\n```\n\n```\n{row['issue_signature'].strip()}\n```\n\n"
+                "This approval was signed with a root-protected SSH key. It cannot be forged by automation.\n\n"
+                "> **This issue is now locked.** To propose scope changes, open a new issue referencing this one.")
+
+    def verify_publication(self, row: dict[str, Any]) -> int:
+        publication = self.core.collect_issue_signing_snapshot(
+            self.reader, row["issue_payload"]["issued_at"], approval_body=self.comment_body(row))
+        identifier = publication["comment_id"]
+        snapshot = publication["snapshot"]
+        self.check(hashlib.sha256(self.core.issue_snapshot_bytes(snapshot)).hexdigest() == row["body"]["issue_snapshot_sha256"],
+                   "published issue approval no longer matches the confirmed snapshot")
+        self.check(_verify_bundle_issue_signature(self.config, row), "independent issue signature verification failed")
+        return identifier
+
+    def accept_issue(self, row: dict[str, Any]) -> None:
+        self.validate_source(row)
+        if row["state"] == "CONFIRMED":
+            row["issue_signature"] = self.issue_signature(row)
+            row["state"] = "POSTING"
+            self.save(row)  # Never blindly repeat an ambiguous remote write.
+            self.core.github_issue_action(self.spec.expected_uid, self.reader, "publish", self.comment_body(row).encode("utf-8"))
+        row["issue_comment_id"] = self.verify_publication(row)
+        row["state"] = "ISSUE_VERIFIED"
+        self.save(row)
+
+    def source_payload(self, row: dict[str, Any]) -> dict[str, Any]:
+        destination = self.core.atomic_bundle_directory(self.config, self.spec.expected_uid, row["approval_id"])
+        entries = [{"path": entry["path"], "relative_path": entry["relative_path"],
+                    "content_sha256": entry["content_sha256"],
+                    "snapshot_path": str(destination / (hashlib.sha256(entry["path"].encode("utf-8")).hexdigest()[:32] + ".source"))}
+                   for entry in row["body"]["entries"]]
+        return {"schema": SCHEMA_BOUND_PAYLOAD, "snapshot_layout": self.core.ATOMIC_BUNDLE_LAYOUT,
+                "approval_id": row["approval_id"], "request_id": row["approval_id"],
+                "original_proposal_id": self.spec.request_id, "proposal_id": row["approval_id"], "proposal": row["body"],
+                "uid": self.spec.expected_uid, "session_id": row["body"]["session_id"], "reason": row["body"]["reason"],
+                "repo_root": row["body"]["repository"]["root"], "repository_id": repository_id(row["body"]["repository"]["root"]),
+                "issue_snapshot_sha256": row["body"]["issue_snapshot_sha256"], "issue_comment_id": row["issue_comment_id"],
+                "entries": entries, "issued_at": row["confirmed_at"], "expires_at": row["confirmed_at"] + row["ttl_seconds"]}
+
+    def recover_source(self, row: dict[str, Any]) -> dict[str, Any]:
+        with self.core.bundle_transaction_lock(self.config, self.spec.expected_uid, self.spec.request_id, "commit"):
+            current = self.load()
+            self.check(current is not None and current.get("state") in ("ISSUE_VERIFIED", "SOURCE_COMMITTED"),
+                       "proposal is cancelled or revoked")
+            self.validate_source(row)
+            payload = self.source_payload(row)
+            directory = self.core.atomic_bundle_directory(self.config, self.spec.expected_uid, row["approval_id"])
+            self.check(_trusted_directory(directory, self.config.trust_uid), "stored bundle directory is unsafe")
+            self.check(not os.path.lexists(self.config.state_dir / "revocations" / str(self.spec.expected_uid) /
+                                          f'{row["approval_id"]}.json'), "bundle is revoked")
+            receipt_path = directory / "receipt.json"
+            self.check(_trusted_file(receipt_path, self.config.trust_uid), "stored bundle receipt is unsafe")
+            content, _digest = secure_source_content(str(receipt_path))
+            self.check(len(content) <= 1024 * 1024, "stored bundle receipt exceeds the limit")
+            receipt = json.loads(content.decode("utf-8"))
+            self.check(receipt.get("schema") == SCHEMA_BOUND_RECEIPT and receipt.get("payload") == payload
+                       and isinstance(receipt.get("signature"), str), "stored bundle does not match confirmed consent")
+            self.check(_verify_signature(self.config, payload, receipt["signature"]), "stored bundle signature is invalid")
+            for entry in payload["entries"]:
+                self.check(_trusted_file(Path(entry["snapshot_path"]), self.config.trust_uid), "stored snapshot is unsafe")
+                _content, digest = secure_source_content(entry["snapshot_path"])
+                self.check(digest == entry["content_sha256"], "stored snapshot was changed")
+            row["state"] = "SOURCE_COMMITTED"
+            self._write_locked(row)
+            return payload
+
+    def publish_source(self, row: dict[str, Any]) -> dict[str, Any]:
+        self.validate_source(row)
+        self.verify_publication(row)
+        destination = self.core.atomic_bundle_directory(self.config, self.spec.expected_uid, row["approval_id"])
+        if os.path.lexists(destination):
+            return self.recover_source(row)
+        payload = self.source_payload(row)
+        staging_root = self.core.root_data_directory(self.config.state_dir / ".staging" / str(self.spec.expected_uid), self.config.trust_uid)
+        with tempfile.TemporaryDirectory(prefix="bundle-", dir=staging_root) as temporary:
+            stage = Path(temporary) / "grant"
+            stage.mkdir(mode=0o700)
+            for entry in payload["entries"]:
+                content, digest = secure_source_content(entry["path"])
+                self.check(digest == entry["content_sha256"], "source changed before publication")
+                name = Path(entry["snapshot_path"]).name
+                atomic_write(stage / name, content, 0o444, self.config.trust_uid, directory_mode=0o700)
+            with self.core.protected_key_descriptor(self.config.private_key, self.config.trust_uid) as descriptor:
+                signature = self.core.descriptor_signature(self.config, descriptor, SIGNATURE_NAMESPACE, canonical_json(payload))
+            receipt = {"schema": SCHEMA_BOUND_RECEIPT, "payload": payload, "signature": signature}
+            self.check(_verify_signature(self.config, payload, signature), "source signature verification failed")
+            atomic_write(stage / "receipt.json", canonical_json(receipt), 0o644, self.config.trust_uid, directory_mode=0o700)
+            with self.core.bundle_transaction_lock(self.config, self.spec.expected_uid, self.spec.request_id, "commit"):
+                current = self.load()
+                self.check(current is not None and current.get("state") == "ISSUE_VERIFIED", "bundle was cancelled or revoked")
+                self.validate_source(row)
+                os.chmod(stage, 0o755)
+                os.replace(stage, destination)  # Receipt and every snapshot become visible together.
+                row["state"] = "SOURCE_COMMITTED"
+                self._write_locked(row)
+            return payload
+
+    def run(self) -> dict[str, Any]:
+        with self.core.bundle_transaction_lock(self.config, self.spec.expected_uid, self.spec.request_id, "operation"):
+            row = self.load()
+            if row is None or row.get("state") == "PREPARED":
+                row = self.prepare()
+            self.check(row["state"] not in ("CANCELLED", "REVOKED"), "proposal is cancelled or revoked")
+            self.check(row.get("ttl_seconds") == self.spec.ttl_seconds, "confirmed lifetime cannot be silently changed")
+            if row["state"] == "SOURCE_COMMITTED":
+                return self.recover_source(row)
+            self.check(row["state"] in ("CONFIRMED", "POSTING", "ISSUE_VERIFIED"), "transaction state is not recoverable")
+            if row["state"] != "ISSUE_VERIFIED":
+                self.accept_issue(row)
+            return self.publish_source(row)
+
+
+def _verify_bundle_issue_signature(config: Config, row: dict[str, Any]) -> bool:
+    directory = _SOURCE_CORE.root_data_directory(config.config_dir / "private" / "verification", config.trust_uid)
+    with tempfile.TemporaryDirectory(prefix="issue-", dir=directory) as temporary:
+        root = Path(temporary)
+        allowed = root / "allowed_signers"
+        signature = root / "signature"
+        atomic_write(allowed, f'approval@aidevops.sh namespaces="aidevops-approve" {row["issue_public"]}\n'.encode("ascii"), 0o600, config.trust_uid)
+        atomic_write(signature, row["issue_signature"].encode("ascii"), 0o600, config.trust_uid)
+        result = _run([SSH_KEYGEN, "-Y", "verify", "-f", str(allowed), "-I", "approval@aidevops.sh",
+                       "-n", _SOURCE_CORE.ISSUE_SIGNATURE_NAMESPACE, "-s", str(signature)],
+                      input_bytes=_SOURCE_CORE.issue_snapshot_bytes(row["issue_payload"]))
+        return result.returncode == 0
+
+
+def approve_bundle(config: Config, spec: ApprovalSpec, repository: str, issue: int) -> dict[str, Any]:
+    _SOURCE_CORE._require_source(spec.confirm is not None and 0 < spec.ttl_seconds <= MAX_TTL_SECONDS,
+                                 "bundle approval requires bounded lifetime and explicit consent")
+    credential = _SOURCE_CORE.github_credential_for_user(spec.expected_uid)
+    reader = _SOURCE_CORE.GitHubIssueReader(repository, issue, credential)
+    return _BundleApproval(config, spec, reader).run()
 
 
 def _trusted_root_broker(config: Config) -> bool:
@@ -693,6 +992,45 @@ def _require_root_broker(config: Config, *, require_tty: bool) -> None:
 
 def _require_root_tty(config: Config) -> None:
     _require_root_broker(config, require_tty=True)
+
+
+def cancel_bundle(config: Config, proposal_id: str, uid: int) -> None:
+    """Persist cancellation before withdrawing any already-published capability."""
+    path = _SOURCE_CORE.bundle_journal_path(config, uid, proposal_id)
+    with _SOURCE_CORE.bundle_transaction_lock(config, uid, proposal_id, "commit"):
+        row = (_SOURCE_CORE._read_request_record(path, config.trust_uid) if path.exists() else
+               {"schema": "aidevops-source-transaction/v1", "proposal_id": proposal_id, "uid": uid})
+        _SOURCE_CORE._require_source(row.get("proposal_id") == proposal_id and row.get("uid") == uid,
+                                     "transaction identity mismatch")
+        row["state"] = "CANCELLED"
+        atomic_write(path, canonical_json(row), 0o600, config.trust_uid)
+    approval_id = row.get("approval_id")
+    if isinstance(approval_id, str):
+        _SOURCE_CORE.withdraw_atomic_bundle(config, uid, approval_id)
+
+
+def _confirm_bundle(scope: dict[str, Any]) -> bool:
+    print("Approve this exact issue scope AND the following temporary source-read capability.")
+    print("Review the named source files for credentials; content screening is not a proof of absence.")
+    # Escape issue/path/control characters rather than interpreting terminal input.
+    print(json.dumps(scope, ensure_ascii=True, sort_keys=True, indent=2))
+    return input("Type APPROVE ISSUE AND SOURCE to confirm: ") == "APPROVE ISSUE AND SOURCE"
+
+
+def _run_approve_bundle(args: argparse.Namespace, config: Config, uid: int, home: Path) -> int:
+    _require_root_tty(config)
+    payload = approve_bundle(config, ApprovalSpec(args.proposal_id, home, uid, parse_ttl(args.ttl),
+                                                confirm=_confirm_bundle), args.repo, args.issue)
+    print(f"Approved issue {args.repo}#{args.issue} and source capability: {payload['approval_id']}")
+    print(f"Expires epoch: {payload['expires_at']}")
+    return 0
+
+
+def _run_cancel_bundle(args: argparse.Namespace, config: Config, uid: int, _home: Path) -> int:
+    _require_root_tty(config)
+    cancel_bundle(config, args.proposal_id, uid)
+    print(f"Cancelled proposal: {args.proposal_id}; published issue signatures are not undone.")
+    return 0
 
 
 def _confirm_setup() -> bool:
@@ -745,18 +1083,37 @@ def _add_proposal_commands(subparsers: Any) -> None:
     proposal.add_argument("--session", required=True)
     proposal.add_argument("--path", required=True, action="append")
     proposal.add_argument("--reason", required=True)
-    proposal.add_argument("--issue-snapshot-sha256", required=True)
+    issue_source = proposal.add_mutually_exclusive_group(required=True)
+    issue_source.add_argument("--issue-snapshot-sha256")
+    issue_source.add_argument("--repo", help="read the issue snapshot without signing or modifying it")
+    proposal.add_argument("--issue", type=int)
     proposal.add_argument("--context-socket", default=os.environ.get("AIDEVOPS_SOURCE_CONTEXT_SOCKET", ""))
     withdrawal = subparsers.add_parser("withdraw-proposal", help="remove pending metadata; does not revoke grants")
     withdrawal.add_argument("proposal_id")
+    bundle = subparsers.add_parser("approve-bundle", help="confirm one issue and its exact runtime-bound source set")
+    bundle.add_argument("proposal_id")
+    bundle.add_argument("--repo", required=True)
+    bundle.add_argument("--issue", required=True, type=int)
+    bundle.add_argument("--ttl", default="12h")
+    cancellation = subparsers.add_parser("cancel-proposal", help="permanently cancel a proposal and withdraw its source grant")
+    cancellation.add_argument("proposal_id")
 
 
 def _run_propose(args: argparse.Namespace, config: Config, uid: int, home: Path) -> int:
     if not args.context_socket:
         raise SourceAccessError("proposal preparation requires a live runtime context socket")
+    _SOURCE_CORE._require_source(uid > 0 and os.geteuid() == uid, "prepare proposals as their non-root owning user")
+    digest = args.issue_snapshot_sha256
+    if args.repo:
+        _SOURCE_CORE._require_source(type(args.issue) is int and args.issue > 0, "--repo requires a positive --issue")
+        reader = _SOURCE_CORE.GitHubIssueReader(args.repo, args.issue, _SOURCE_CORE.github_credential_for_user(uid))
+        snapshot = _SOURCE_CORE.collect_issue_signing_snapshot(reader, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())))
+        digest = hashlib.sha256(_SOURCE_CORE.issue_snapshot_bytes(snapshot)).hexdigest()
+    elif args.issue is not None:
+        raise SourceAccessError("--issue requires --repo")
     proposal_id = _SOURCE_CORE.create_source_proposal(
-        config, ManifestRequestSpec(args.session, uid, home, tuple(args.path), args.reason),
-        issue_snapshot_sha256=args.issue_snapshot_sha256, context_socket=args.context_socket,
+        config, ManifestRequestSpec(args.session, uid, home, _SOURCE_CORE.proposal_candidate_paths(args.path), args.reason),
+        issue_snapshot_sha256=digest, context_socket=args.context_socket,
     )
     print(proposal_id)
     return 0
@@ -854,6 +1211,8 @@ def main(argv: list[str] | None = None) -> int:
         "request": _run_request,
         "propose": _run_propose,
         "withdraw-proposal": _run_withdraw_proposal,
+        "approve-bundle": _run_approve_bundle,
+        "cancel-proposal": _run_cancel_bundle,
         "approve": _run_approve,
         "verify": _run_verify,
         "revoke": _run_revoke,

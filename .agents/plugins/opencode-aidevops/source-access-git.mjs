@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process";
 
 export function sourceGitArguments(args) {
-  return ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args];
+  return ["--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args];
 }
 
 export function sourceGitEnvironment(environment = process.env) {
