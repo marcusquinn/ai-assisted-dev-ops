@@ -54,6 +54,11 @@ def observe(executor):
     started = executor.get("started_at")
     if type(pid) is not int or pid <= 1 or not isinstance(started, str) or not started:
         return unknown
+    return observe_local_process(pid, started)
+
+
+def observe_local_process(pid, started):
+    """Only called after validating the host/PID-namespace identity."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
