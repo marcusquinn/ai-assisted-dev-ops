@@ -535,7 +535,7 @@ _dlw_restore_worktree_deps() {
 	# missing node_modules. Only check top-level and one level deep —
 	# deeper nesting is unlikely and find is expensive.
 	local _pkg_dir=""
-	local _restored=0
+	local _attempted=0
 	local _max_dirs="${WORKTREE_NODE_MODULES_RESTORE_MAX_DIRS:-2}"
 	local _restore_root="${WORKTREE_NODE_MODULES_RESTORE_ROOT_ENABLED:-auto}"
 	# Share the controller's bounded, identity-checked copy implementation.
@@ -550,7 +550,7 @@ _dlw_restore_worktree_deps() {
 	fi
 	[[ "$_max_dirs" =~ ^[0-9]+$ ]] || _max_dirs=2
 	while IFS= read -r _pkg_dir; do
-		if ((_restored >= _max_dirs)); then
+		if ((_attempted >= _max_dirs)); then
 			break
 		fi
 		local _dir=""
@@ -566,9 +566,10 @@ _dlw_restore_worktree_deps() {
 		local _src_nm="${repo_path}${_rel_dir}/node_modules"
 		local _dst_nm="${worktree_path}${_rel_dir}/node_modules"
 		if [[ -d "$_src_nm" && ! -d "$_dst_nm" ]]; then
-			if _provision_worktree_node_modules "$worktree_path" "$repo_path" "${_rel_dir#/}" >>"$LOGFILE" 2>&1; then
-				_restored=$((_restored + 1))
-			else
+			# Rejections also spend preparation time and must not exhaust the
+			# prelaunch lease by retrying every package in a large worktree.
+			_attempted=$((_attempted + 1))
+			if ! _provision_worktree_node_modules "$worktree_path" "$repo_path" "${_rel_dir#/}" >>"$LOGFILE" 2>&1; then
 				echo "[dispatch_with_dedup] Dependency provisioning unavailable; no external permission granted" >>"$LOGFILE"
 			fi
 		fi
