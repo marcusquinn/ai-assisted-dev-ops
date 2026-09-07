@@ -83,6 +83,12 @@ git diff --check
 
 - **Surface mapping:** Brief readiness checks this record; planning status checks only TODO/brief/plan publication scope; progressive-load protects the current pointer graph; diff checking protects written planning syntax. None authorizes dispatch of this parent.
 
+### Files Scope
+
+- `TODO.md`
+- `todo/tasks/t18402-brief.md`
+- `todo/plans/compounding-value-architecture.md`
+
 ### Progressive Context Plan
 
 - **Read first:** `todo/plans/compounding-value-architecture.md` for maintainer direction and work-package ownership.
@@ -91,10 +97,20 @@ git diff --check
 
 ## Acceptance Criteria
 
-- [ ] Canonical purpose is prominent in README and reaches architecture/self-improvement decision points without global prompt duplication or unsupported claims.
-- [ ] Every child has a repo-native brief, stable task identity, linked issue and verified ordering; loss of a forge does not remove the brief/plan.
-- [ ] Runtime/context, portability and value-evaluation children deliver their own evidence without deleting unverified hard-won guidance or weakening permissions.
-- [ ] The parent is not dispatched or marked complete merely because this plan or one child merges.
+- [x] Canonical purpose is prominent in README and reaches architecture/self-improvement decision points without global prompt duplication or unsupported claims.
+- [x] Every child has a repo-native brief, stable task identity, linked issue and verified ordering; loss of a forge does not remove the brief/plan.
+- [x] Runtime/context, portability and value-evaluation children deliver their own evidence without deleting unverified hard-won guidance or weakening permissions.
+- [x] The parent is not dispatched or marked complete merely because this plan or one child merges.
+
+## Completion evidence
+
+- Purpose and decision guidance: PR #31360.
+- Repo-native portability and runtime/context delivery: PRs #31365, #31371,
+  #31388, #31395, #31398, #31400, and #31399.
+- Operation-output and helper-discovery efficiency: PR #31455.
+- Representative value protocol and bounded initial report: PR #31477.
+- All ten child issues are closed; parent completion was recorded only after the
+  final child merged.
 
 ## Context
 
