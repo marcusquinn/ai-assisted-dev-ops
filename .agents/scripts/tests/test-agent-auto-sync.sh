@@ -347,6 +347,18 @@ create_fake_repo() {
 	return 0
 }
 
+configure_local_aidevops_remote() {
+	local repo_path="$1"
+	local repo_name="${repo_path##*/}"
+	local remote_path="$TEST_DIR/remotes/$repo_name/marcusquinn/aidevops.git"
+
+	mkdir -p "${remote_path%/*}"
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git init --bare -q "$remote_path"
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" remote set-url origin "$remote_path"
+	printf '%s\n' "$remote_path"
+	return 0
+}
+
 prepare_active_release_preservation() {
 	local repo_path="$1"
 	local topology="$2"
@@ -758,19 +770,60 @@ test_release_sync_accepts_validated_same_tree_descendant() {
 	return 0
 }
 
-test_release_sync_rejects_changed_tree_descendant() {
+test_release_sync_accepts_changed_tree_protected_main_descendant() {
 	local repo_path
+	local remote_path=""
+	local active_sha=""
 	local output=""
-	repo_path=$(create_fake_repo "release-changed-tree-descendant" "https://github.com/marcusquinn/aidevops.git")
-	prepare_active_release_preservation "$repo_path" changed-tree >/dev/null
+	repo_path=$(create_fake_repo "release-changed-tree-protected-main" "https://github.com/marcusquinn/aidevops.git")
+	remote_path=$(configure_local_aidevops_remote "$repo_path") || {
+		print_result "release sync accepts a changed-tree protected-main descendant" 1 "Could not prepare local protected remote"
+		return 0
+	}
+	active_sha=$(prepare_active_release_preservation "$repo_path" changed-tree)
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" push -q "$remote_path" "$active_sha:refs/heads/main"
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1) &&
+		[[ ! -s "$TEST_DIR/sync.log" ]] &&
+		[[ "$output" == *"preservation merge ${active_sha:0:12}"* ]] &&
+		[[ "$output" == *"verified no-op"* ]]; then
+		print_result "release sync accepts an exact-verified changed-tree protected-main descendant" 0
+	else
+		print_result "release sync accepts an exact-verified changed-tree protected-main descendant" 1 "$output"
+	fi
+	return 0
+}
+
+test_release_sync_rejects_changed_tree_non_tip_descendant() {
+	local repo_path
+	local remote_path=""
+	local release_sha=""
+	local active_sha=""
+	local protected_main=""
+	local output=""
+	repo_path=$(create_fake_repo "release-changed-tree-non-tip" "https://github.com/marcusquinn/aidevops.git")
+	remote_path=$(configure_local_aidevops_remote "$repo_path") || {
+		print_result "release sync rejects a changed-tree non-tip descendant" 1 "Could not prepare local protected remote"
+		return 0
+	}
+	release_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD)
+	active_sha=$(prepare_active_release_preservation "$repo_path" changed-tree)
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout -q --detach "$active_sha"
+	printf 'new protected-main change\n' >"$repo_path/new-protected-change.txt"
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" add new-protected-change.txt
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" commit -qm "advance protected main"
+	protected_main=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD)
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" push -q "$remote_path" "$protected_main:refs/heads/main"
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout -q --detach "$release_sha"
 	: >"$TEST_DIR/sync.log"
 
 	if output=$(invoke_release_sync "$repo_path" 2>&1); then
-		print_result "release sync rejects a changed-tree preservation descendant" 1 "Changed-tree descendant was reported as converged"
-	elif [[ "$output" == *"tree differs from release"* && ! -s "$TEST_DIR/sync.log" ]]; then
-		print_result "release sync rejects a changed-tree preservation descendant" 0
+		print_result "release sync rejects a changed-tree non-tip descendant" 1 "Non-tip descendant was reported as converged"
+	elif [[ "$output" == *"changed tree does not match protected main"* && ! -s "$TEST_DIR/sync.log" ]]; then
+		print_result "release sync rejects a changed-tree non-tip descendant" 0
 	else
-		print_result "release sync rejects a changed-tree preservation descendant" 1 "Missing fail-closed changed-tree evidence: $output"
+		print_result "release sync rejects a changed-tree non-tip descendant" 1 "Missing fail-closed protected-main evidence: $output"
 	fi
 	return 0
 }
@@ -981,7 +1034,8 @@ main() {
 	test_release_sync_rejects_stale_sentinel
 	test_release_sync_deploys_validated_active_ancestor
 	test_release_sync_accepts_validated_same_tree_descendant
-	test_release_sync_rejects_changed_tree_descendant
+	test_release_sync_accepts_changed_tree_protected_main_descendant
+	test_release_sync_rejects_changed_tree_non_tip_descendant
 	test_release_sync_rejects_unrelated_active_commit
 	test_release_sync_recovers_verified_squash_integration
 	test_release_sync_rejects_incomplete_squash_evidence
