@@ -31,6 +31,12 @@ Prevent misinformation by fixing contradictions and weakly-supported claims in s
 4. **Remove ambiguity** — rewrite unclear references (pronouns, implied subjects, outdated qualifiers); keep policy/offer language explicit; normalize terminology across product, support, and legal pages
 5. **Re-test representative prompts** — ask question sets likely to trigger past confusion; confirm generated answers align with canonical facts; record residual drift for follow-up
 
+For corpus-level identity or apparent cross-domain consensus, load
+`entity-evidence-audit.md` before accepting corroboration. Distinguish product,
+publisher, and person identities; record source ownership and claim derivation.
+Repeated owned or syndicated claims are not independent verification. Use
+`seo-geo-experiment-design.md` for repeatable prompt conditions and causal limits.
+
 ## Risk Signals
 
 - Conflicting numeric values between key pages

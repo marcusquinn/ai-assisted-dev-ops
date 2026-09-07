@@ -68,6 +68,14 @@ WORKTREE_REGISTRY_DB="${WORKTREE_REGISTRY_DB:-${WORKTREE_REGISTRY_DIR}/worktree-
 WORKTREE_OWNER_DEAD_COOLDOWN_MINUTES="${WORKTREE_OWNER_DEAD_COOLDOWN_MINUTES:-60}"
 _WORKTREE_REGISTRY_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
 
+_wt_sqlite3() {
+	local timeout_ms="${AIDEVOPS_WORKTREE_REGISTRY_BUSY_TIMEOUT_MS:-5000}"
+	[[ "$timeout_ms" =~ ^[0-9]+$ ]] || timeout_ms=5000
+	[[ "$timeout_ms" -le 60000 ]] || timeout_ms=60000
+	command sqlite3 -cmd ".timeout ${timeout_ms}" "$@"
+	return $?
+}
+
 # Get the command name (basename) for a given PID.
 # Returns empty string if the PID does not exist or info is unavailable.
 # Arguments:
@@ -334,7 +342,7 @@ _wt_registry_lookup_path() {
 			printf '%s' "$stored_path"
 			return 0
 		fi
-	done < <(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT worktree_path FROM worktree_owners;" 2>/dev/null || true)
+	done < <(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT worktree_path FROM worktree_owners;" 2>/dev/null || true)
 
 	printf '%s' "$normalized"
 	return 0
@@ -361,7 +369,7 @@ _wt_path_is_canonical() {
 _wt_delete_owner_row() {
 	local wt_path="$1"
 	[[ -f "$WORKTREE_REGISTRY_DB" ]] || return 0
-	sqlite3 "$WORKTREE_REGISTRY_DB" \
+	_wt_sqlite3 "$WORKTREE_REGISTRY_DB" \
 		"DELETE FROM worktree_owners WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';" \
 		2>/dev/null || return 1
 	return 0
@@ -370,7 +378,7 @@ _wt_delete_owner_row() {
 # Initialize the registry database
 _init_registry_db() {
 	mkdir -p "$WORKTREE_REGISTRY_DIR" 2>/dev/null || true
-	sqlite3 "$WORKTREE_REGISTRY_DB" "
+	_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         CREATE TABLE IF NOT EXISTS worktree_owners (
             worktree_path TEXT PRIMARY KEY,
             branch        TEXT,
@@ -386,41 +394,41 @@ _init_registry_db() {
     " 2>/dev/null || true
 
 	local has_dead_seen_column
-	has_dead_seen_column=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	has_dead_seen_column=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT 1 FROM pragma_table_info('worktree_owners')
         WHERE name = 'owner_dead_seen_at';
     " 2>/dev/null || echo "")
 	if [[ -z "$has_dead_seen_column" ]]; then
-		sqlite3 "$WORKTREE_REGISTRY_DB" "
+		_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
             ALTER TABLE worktree_owners
             ADD COLUMN owner_dead_seen_at TEXT DEFAULT '';
         " 2>/dev/null || true
 	fi
 
 	local has_owner_comm_column
-	has_owner_comm_column=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	has_owner_comm_column=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT 1 FROM pragma_table_info('worktree_owners')
         WHERE name = 'owner_comm';
     " 2>/dev/null || echo "")
 	if [[ -z "$has_owner_comm_column" ]]; then
-		sqlite3 "$WORKTREE_REGISTRY_DB" "
+		_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
             ALTER TABLE worktree_owners
             ADD COLUMN owner_comm TEXT DEFAULT '';
 		" 2>/dev/null || true
 	fi
 
 	local has_owner_process_start_column
-	has_owner_process_start_column=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	has_owner_process_start_column=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT 1 FROM pragma_table_info('worktree_owners')
         WHERE name = 'owner_process_start';
     " 2>/dev/null || echo "")
 	if [[ -z "$has_owner_process_start_column" ]]; then
-		sqlite3 "$WORKTREE_REGISTRY_DB" "
+		_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
             ALTER TABLE worktree_owners
             ADD COLUMN owner_process_start TEXT DEFAULT '';
 		" 2>/dev/null || return 1
 	fi
-	has_owner_process_start_column=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	has_owner_process_start_column=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT 1 FROM pragma_table_info('worktree_owners')
         WHERE name = 'owner_process_start';
     " 2>/dev/null) || return 1
@@ -505,7 +513,7 @@ register_worktree() {
 		  '$(_wt_sql_escape "$owner_process_start")',
 		  '');
     "
-	} | sqlite3 "$WORKTREE_REGISTRY_DB" 2>/dev/null || return 1
+	} | _wt_sqlite3 "$WORKTREE_REGISTRY_DB" 2>/dev/null || return 1
 	return 0
 }
 
@@ -872,7 +880,7 @@ unregister_worktree() {
 	[[ ! -f "$WORKTREE_REGISTRY_DB" ]] && return 0
 	wt_path=$(_wt_registry_lookup_path "$wt_path")
 
-	sqlite3 "$WORKTREE_REGISTRY_DB" "
+	_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         DELETE FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';
     " 2>/dev/null || true
@@ -931,7 +939,7 @@ unregister_worktree_if_owner_pid() {
 	wt_path=$(_wt_registry_lookup_path "$wt_path") || return 1
 
 	local changed="0"
-	changed=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	changed=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
 		DELETE FROM worktree_owners
 		WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
 		  AND owner_pid = ${expected_owner_pid};
@@ -958,7 +966,7 @@ unregister_worktree_if_owner_contract() {
 	command -v sqlite3 >/dev/null 2>&1 || return 1
 	[[ -f "$WORKTREE_REGISTRY_DB" ]] || return 1
 	wt_path=$(_wt_registry_lookup_path "$wt_path") || return 1
-	changed=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	changed=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
 		DELETE FROM worktree_owners
 		WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
 		  AND owner_pid = ${expected_owner_pid}
@@ -988,7 +996,7 @@ worktree_has_exact_owner_contract() {
 	command -v sqlite3 >/dev/null 2>&1 || return 1
 	[[ -f "$WORKTREE_REGISTRY_DB" ]] || return 1
 	wt_path=$(_wt_registry_lookup_path "$wt_path") || return 1
-	exact_match=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	exact_match=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
 		SELECT 1
 		FROM worktree_owners
 		WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
@@ -1015,7 +1023,7 @@ check_worktree_owner_snapshot() {
 	wt_path=$(_wt_registry_lookup_path "$wt_path")
 
 	local owner_info
-	owner_info=$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
+	owner_info=$(_wt_sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
         SELECT owner_pid, owner_session, owner_batch, task_id, created_at,
                COALESCE(owner_process_start, '')
         FROM worktree_owners
@@ -1057,7 +1065,7 @@ worktree_owner_dead_seen_at() {
 	wt_path=$(_wt_registry_lookup_path "$wt_path")
 
 	local dead_seen_at
-	dead_seen_at=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	dead_seen_at=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT COALESCE(owner_dead_seen_at, '')
         FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';
@@ -1078,7 +1086,7 @@ _wt_owner_dead_cooldown_minutes() {
 _wt_mark_owner_dead_seen() {
 	local wt_path="$1"
 
-	sqlite3 "$WORKTREE_REGISTRY_DB" "
+	_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         UPDATE worktree_owners
         SET owner_dead_seen_at = CASE
             WHEN COALESCE(owner_dead_seen_at, '') = '' THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
@@ -1095,7 +1103,7 @@ _wt_owner_dead_cooldown_expired() {
 	cooldown_minutes=$(_wt_owner_dead_cooldown_minutes)
 
 	local expired
-	expired=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	expired=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT CASE
             WHEN COALESCE(owner_dead_seen_at, '') != ''
              AND datetime(replace(replace(owner_dead_seen_at, 'T', ' '), 'Z', ''), '+${cooldown_minutes} minutes') <= datetime('now')
@@ -1130,7 +1138,7 @@ PY
 _wt_owner_comm_for_path() {
 	local wt_path="$1"
 	local owner_comm
-	owner_comm=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	owner_comm=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT COALESCE(owner_comm, '')
         FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';
@@ -1145,7 +1153,7 @@ _wt_owner_generation_contract_for_path() {
 	local wt_path="$1"
 	local separator=$'\x1f'
 	local owner_contract=""
-	owner_contract=$(sqlite3 -separator "$separator" "$WORKTREE_REGISTRY_DB" "
+	owner_contract=$(_wt_sqlite3 -separator "$separator" "$WORKTREE_REGISTRY_DB" "
         SELECT owner_pid, COALESCE(owner_process_start, ''), COALESCE(created_at, '')
         FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';
@@ -1164,7 +1172,7 @@ _wt_unregister_owner_if_generation_matches() {
 	local changed="0"
 
 	[[ "$expected_owner_pid" =~ ^[0-9]+$ && -n "$expected_created_at" ]] || return 1
-	changed=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	changed=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         DELETE FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
           AND owner_pid = ${expected_owner_pid}
@@ -1236,7 +1244,7 @@ _wt_legacy_dispatch_precreate_systemd_owner_expired() {
 	registered_comm=$(_wt_owner_comm_for_path "$wt_path")
 	[[ "$current_comm" == "systemd" && "$registered_comm" == "systemd" ]] || return 1
 
-	expired=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	expired=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         SELECT CASE
             WHEN owner_pid = ${owner_pid}
              AND COALESCE(owner_process_start, '') = ''
@@ -1317,7 +1325,7 @@ _wt_is_worktree_owned_by_others_for_resolved_pid() {
 		return 0
 	fi
 
-	sqlite3 "$WORKTREE_REGISTRY_DB" "
+	_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         UPDATE worktree_owners
         SET owner_dead_seen_at = ''
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
@@ -1378,7 +1386,7 @@ _wt_registry_delete_paths_batch() {
 			printf "DELETE FROM worktree_owners WHERE worktree_path = '%s';\n" "$escaped_wt_path"
 		done <<<"$stale_entries"
 		printf 'COMMIT;\n'
-	} | sqlite3 "$WORKTREE_REGISTRY_DB" >/dev/null 2>&1 || return 1
+	} | _wt_sqlite3 "$WORKTREE_REGISTRY_DB" >/dev/null 2>&1 || return 1
 	return 0
 }
 
@@ -1434,7 +1442,7 @@ _wt_registry_reconcile_existing_owners() {
 
 	local separator=$'\x1f'
 	local entries=""
-	entries=$(sqlite3 -separator "$separator" "$WORKTREE_REGISTRY_DB" "
+	entries=$(_wt_sqlite3 -separator "$separator" "$WORKTREE_REGISTRY_DB" "
         SELECT worktree_path, owner_pid
         FROM worktree_owners
         ORDER BY CASE WHEN COALESCE(owner_dead_seen_at, '') = '' THEN 1 ELSE 0 END,
@@ -1469,7 +1477,7 @@ prune_worktree_registry() {
 	# First, delete entries with ANSI escape codes (corrupted entries)
 	# These often have newlines and break normal parsing
 	local ansi_count
-	ansi_count=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	ansi_count=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         DELETE FROM worktree_owners 
         WHERE worktree_path LIKE '%'||char(27)||'%' 
            OR worktree_path LIKE '%[0;%'
@@ -1481,7 +1489,7 @@ prune_worktree_registry() {
 
 	# Next, delete test artifacts in temp directories
 	local temp_count
-	temp_count=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+	temp_count=$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "
         DELETE FROM worktree_owners 
         WHERE worktree_path LIKE '/tmp/%' 
            OR worktree_path LIKE '/var/folders/%';
@@ -1494,7 +1502,7 @@ prune_worktree_registry() {
 	# one sqlite transaction; the old path called unregister_worktree once per row,
 	# which made large stale backlogs exceed common assistant/tool timeouts.
 	local entries
-	entries=$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
+	entries=$(_wt_sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
         SELECT worktree_path, owner_pid FROM worktree_owners;
     " 2>/dev/null || echo "")
 

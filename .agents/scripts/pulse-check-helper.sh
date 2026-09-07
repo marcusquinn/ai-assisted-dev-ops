@@ -313,6 +313,12 @@ Source commands:
 - \`.agents/scripts/worker-activity-helper.sh summary --since 1h --json --no-pr-check\`
 - \`.agents/scripts/pulse-diagnose-helper.sh cycle-health --window 1h\`
 
+## Reproducer
+
+- **Symptom command**: \`.agents/scripts/pulse-check-helper.sh json\`
+- **Actual output**: finding \`${finding_id}\` with severity \`${severity}\`; the captured aggregate measurements are recorded in Evidence above.
+- **Causal status**: unconfirmed investigation. This report establishes a symptom, not its root cause. Re-run the read-only command against the current deployed version and inspect the matching finding before choosing a repair. If it no longer reproduces, preserve the historical evidence and verify recovery rather than redispatching an unchanged hypothesis.
+
 ## Recommendation
 
 ${recommendation}

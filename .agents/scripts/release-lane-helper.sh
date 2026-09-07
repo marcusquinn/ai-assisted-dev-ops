@@ -25,6 +25,13 @@ _AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT="aggregate-publication-committing"
 _AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH="reserved-authorization-refresh"
 _AIDEVOPS_RELEASE_LANE_PHASE_RECONCILE_REQUIRED="reconcile-required"
 _AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING="aggregation-successor-preparing"
+_AIDEVOPS_RELEASE_LANE_PHASE_PREPARING="preparing"
+_AIDEVOPS_RELEASE_LANE_STATE_ABSENT="absent"
+_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT="fenced-prepublication/v1"
+_AIDEVOPS_RELEASE_LANE_RECLAIM_CONTRACT="same-source-reclaim/v1"
+_AIDEVOPS_RELEASE_LANE_HISTORY_LIMIT=32
+_AIDEVOPS_RELEASE_LANE_SHA_PATTERN='^[0-9a-f]{40}$'
+_AIDEVOPS_RELEASE_LANE_TRUE="true"
 
 _AIDEVOPS_RELEASE_LANE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=release-lane-liveness.sh
@@ -169,6 +176,222 @@ _release_lane_stale_prepublication() {
 	return $?
 }
 
+_release_lane_history_heads() {
+	local repo="$1"
+	gh api --method GET "repos/${repo}/commits" -f "sha=${_AIDEVOPS_RELEASE_LANE_BRANCH}" \
+		-f "path=${_AIDEVOPS_RELEASE_LANE_FILE}" -f "per_page=${_AIDEVOPS_RELEASE_LANE_HISTORY_LIMIT}" \
+		--jq '.[].sha' 2>/dev/null
+	return $?
+}
+
+_release_lane_state_at_head() {
+	local repo="$1"
+	local head="$2"
+	[[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+	gh api "repos/${repo}/contents/${_AIDEVOPS_RELEASE_LANE_FILE}?ref=${head}" \
+		--jq '.content | @base64d' 2>/dev/null
+	return $?
+}
+
+_release_lane_reclaim_state_matches_current() {
+	local previous_state="$1"
+	local current_state="$2"
+	jq -e --argjson current "$current_state" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" \
+		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_PREPARING" '
+		def entries($manifest):
+			$manifest | split(",") | map(select(length > 0) | split("@")
+				| {pr:.[0],merge:(.[1] // null)});
+		def compatible($old; $new):
+			(entries($old)) as $old_entries | (entries($new)) as $new_entries
+			| ($old_entries | length) > 0
+			and all($old_entries[]; . as $entry | any($new_entries[];
+				.pr == $entry.pr and ($entry.merge == null or .merge == $entry.merge)));
+		.active == true and (.phase == $reserved or .phase == $preparing)
+		and .repository == $current.repository and .source_pr == $current.source_pr
+		and ((.snapshot_manifest_bound == true and .expected_sources == $current.expected_sources)
+			or ((.snapshot_manifest_bound // false) != true
+				and compatible(.expected_sources; $current.expected_sources)))
+		and .snapshot_sha == $current.snapshot_sha and .snapshot_base == $current.snapshot_base
+		and .snapshot_base_tag == $current.snapshot_base_tag
+		and .snapshot_base_object == $current.snapshot_base_object
+		and .tag == null and .terminal_receipt == null
+		and (.prepublication_recovery // null) == null
+		and (.aggregate_recovery // null) == null
+		and (.aggregate_successor // null) == null
+		and (.reserved_authorization_refresh // null) == null
+	' <<<"$previous_state" >/dev/null
+	return $?
+}
+
+# Prove that a contract-less lane descends from the same fenced reservation.
+# Every file-changing revision between the current head and the fenced ancestor
+# must retain the immutable source/snapshot identity and remain pre-publication.
+#aidevops:trust-boundary
+_release_lane_find_reclaimed_contract_ancestor() {
+	local repo="$1"
+	local current_head="$2"
+	local current_state="$3"
+	local heads=""
+	local head=""
+	local state_json=""
+	local first=""
+	heads=$(_release_lane_history_heads "$repo") || return 1
+	[[ -n "$heads" ]] || return 1
+	while IFS= read -r head; do
+		[[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+		if [[ -z "$first" ]]; then
+			[[ "$head" == "$current_head" ]] || return 1
+			first="$head"
+			continue
+		fi
+		state_json=$(_release_lane_state_at_head "$repo" "$head") || return 1
+		_release_lane_reclaim_state_matches_current "$state_json" "$current_state" || return 1
+		if jq -e --arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+			'.reservation_contract == $contract' <<<"$state_json" >/dev/null; then
+			jq -cn --arg type "$_AIDEVOPS_RELEASE_LANE_RECLAIM_CONTRACT" \
+				--arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+				--arg ancestor "$head" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+				'{type:$type,prior_contract:$contract,ancestor_head:$ancestor,verified_at:$now}'
+			return $?
+		fi
+		jq -e '(.reservation_contract // null) == null' <<<"$state_json" >/dev/null || return 1
+	done <<<"$heads"
+	return 1
+}
+
+_release_lane_resolve_reclaim_evidence() {
+	local repo="$1"
+	local reclaim_head=""
+	local reclaim_state=""
+	if jq -e --arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+		'.reservation_contract == $contract' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		printf 'null\n'
+		return 0
+	fi
+	if jq -e --arg type "$_AIDEVOPS_RELEASE_LANE_RECLAIM_CONTRACT" \
+		--arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+		--arg sha_pattern "$_AIDEVOPS_RELEASE_LANE_SHA_PATTERN" '
+		.reservation_contract_reclaim.type == $type
+		and .reservation_contract_reclaim.prior_contract == $contract
+		and (.reservation_contract_reclaim.previous_head | test($sha_pattern))
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		reclaim_head=$(jq -r '.reservation_contract_reclaim.previous_head' \
+			<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		reclaim_state=$(_release_lane_state_at_head "$repo" "$reclaim_head") || {
+			printf 'Preparing recovery refused: reclaim predecessor is unreadable\n' >&2
+			return 3
+		}
+		_release_lane_reclaim_state_matches_current "$reclaim_state" \
+			"$_AIDEVOPS_RELEASE_LANE_JSON" || {
+			printf 'Preparing recovery refused: reclaim predecessor provenance diverged\n' >&2
+			return 3
+		}
+		jq -e --arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+			'.reservation_contract == $contract' <<<"$reclaim_state" >/dev/null || {
+			printf 'Preparing recovery refused: reclaim predecessor was not fenced\n' >&2
+			return 3
+		}
+		jq -c '.reservation_contract_reclaim' <<<"$_AIDEVOPS_RELEASE_LANE_JSON"
+		return $?
+	fi
+	_release_lane_find_reclaimed_contract_ancestor "$repo" \
+		"$_AIDEVOPS_RELEASE_LANE_HEAD" "$_AIDEVOPS_RELEASE_LANE_JSON" || {
+		printf 'Preparing recovery refused: no verified fenced reservation lineage\n' >&2
+		return 3
+	}
+	return 0
+}
+
+# Reclaiming a preparing lane is intentionally a separate contract from stale
+# reservation recovery. The caller must first prove that the isolated release
+# worktree and every remote publication precursor are absent or inert.
+#aidevops:trust-boundary
+release_lane_recover_dead_preparing() {
+	local repo="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	local attempted_tag="$4"
+	local recovery_evidence="$5"
+	local operation_token=""
+	local state_json=""
+	local updated_at=""
+	local updated_epoch=""
+	local now_epoch=""
+	local reclaim_evidence="null"
+	local stale_after="${AIDEVOPS_RELEASE_LANE_STALE_SECONDS:-$_AIDEVOPS_RELEASE_LANE_STALE_PREPUBLICATION_SECONDS}"
+	[[ "$source_pr" =~ ^[0-9]+$ && -n "$expected_sources" ]] || return 1
+	[[ "$attempted_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	[[ "$stale_after" =~ ^[0-9]+$ && "$stale_after" -gt 0 ]] || return 1
+	release_lane_read "$repo" || return 1
+	reclaim_evidence=$(_release_lane_resolve_reclaim_evidence "$repo") || return $?
+	jq -e --argjson source_pr "$source_pr" --arg expected "$expected_sources" \
+		--arg attempted_tag "$attempted_tag" --arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+		--argjson reclaim "$reclaim_evidence" \
+		--arg sha_pattern '^[0-9a-f]{40}$' --arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_PREPARING" '
+		.active == true and .source_pr == $source_pr and .phase == $preparing
+		and (.reservation_contract == $contract or $reclaim != null) and .expected_sources == $expected
+		and .tag == null and .terminal_receipt == null
+		and (.snapshot_manifest_bound == true)
+		and (.snapshot_sha | test($sha_pattern)) and (.snapshot_base | test($sha_pattern))
+		and (.snapshot_base_object | test($sha_pattern))
+		and (.snapshot_base_tag | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+		and ((.preparing_recovery // null) == null
+			or (.preparing_recovery.attempted_tag == $attempted_tag
+				and .preparing_recovery.evidence.expected_sources == $expected))
+		and (.prepublication_recovery // null) == null
+		and (.aggregate_recovery // null) == null
+		and (.aggregate_successor // null) == null
+		and (.reserved_authorization_refresh // null) == null
+		and ($attempted_tag | length) > 0
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || {
+		printf 'Preparing recovery refused: lane state no longer matches the authorized recovery\n' >&2
+		return 3
+	}
+	[[ "$(_release_lane_executor_observe "$_AIDEVOPS_RELEASE_LANE_JSON" | jq -r '.state')" == "dead" ]] || return 3
+	updated_at=$(jq -r '.updated_at // ""' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	updated_epoch=$(date -u -d "$updated_at" +%s 2>/dev/null ||
+		date -u -jf '%Y-%m-%dT%H:%M:%SZ' "$updated_at" +%s 2>/dev/null || true)
+	now_epoch=$(date +%s 2>/dev/null || true)
+	[[ "$updated_epoch" =~ ^[0-9]+$ && "$now_epoch" =~ ^[0-9]+$ && "$now_epoch" -ge "$updated_epoch" ]] || return 3
+	[[ $((now_epoch - updated_epoch)) -ge "$stale_after" ]] || return 3
+	jq -e --arg tag "$attempted_tag" --arg expected "$expected_sources" --arg sha_pattern '^[0-9a-f]{40}$' \
+		--arg absent "$_AIDEVOPS_RELEASE_LANE_STATE_ABSENT" '
+		.type == "preparing-recovery/v1" and .attempted_tag == $tag
+		and .expected_sources == $expected and .remote_tag == $absent
+		and .github_release == $absent and .protected_branch == $absent
+		and .npm == $absent and .homebrew == $absent
+		and .surviving_process == $absent and .worktree_state == "isolated"
+		and (.worktree_head | test($sha_pattern))
+		and (.checked_at | type) == "string" and (.checked_at | length) > 0
+	' <<<"$recovery_evidence" >/dev/null || return 1
+	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(openssl rand -hex 16 2>/dev/null)" || return 1
+	state_json=$(jq -c --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" \
+		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_PREPARING" \
+		--arg token "$operation_token" --arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg tag "$attempted_tag" \
+		--arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+		--argjson reclaim "$reclaim_evidence" --argjson evidence "$recovery_evidence" \
+		--argjson executor "$(_release_lane_executor_capture || printf 'null')" '
+		.updated_at as $previous_updated_at | .executor as $previous_executor
+		| (.preparing_recovery // null) as $existing_recovery
+		| .phase=$reserved | .operation_token=$token | .owner=$owner | .updated_at=$now
+		| .executor=$executor | .reservation_contract=$contract
+		| if $reclaim == null then . else .reservation_contract_recovery=$reclaim end
+		| .preparing_recovery=(if $existing_recovery == null then
+			{previous_phase:$preparing,previous_updated_at:$previous_updated_at,
+			 previous_executor:$previous_executor,attempted_tag:$tag,recovered_at:$now,evidence:$evidence}
+		  else $existing_recovery
+			| .revalidations=((.revalidations // []) +
+				[{previous_updated_at:$previous_updated_at,previous_executor:$previous_executor,
+				  recovered_at:$now,evidence:$evidence}]) end)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
+	_AIDEVOPS_RELEASE_LANE_RESULT="$_AIDEVOPS_RELEASE_LANE_RESULT_ACQUIRED"
+	printf 'Recovered dead tagless preparing lane for PR #%s at %s\n' "$source_pr" "$attempted_tag"
+	return 0
+}
+
 _release_lane_reclaim_same_source() {
 	local repo="$1"
 	local source_pr="$2"
@@ -186,7 +409,23 @@ _release_lane_reclaim_same_source() {
 		<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	# A resumed transaction may use older code: do not inherit auto-recovery eligibility.
 	state_json=$(jq -c --argjson executor "$(_release_lane_executor_capture || printf 'null')" \
-		'.executor=$executor | del(.reservation_contract)' <<<"$state_json") || return 1
+		--arg contract "$_AIDEVOPS_RELEASE_LANE_RESERVATION_CONTRACT" \
+		--arg type "$_AIDEVOPS_RELEASE_LANE_RECLAIM_CONTRACT" --arg previous_head "$_AIDEVOPS_RELEASE_LANE_HEAD" \
+		--arg sha_pattern "$_AIDEVOPS_RELEASE_LANE_SHA_PATTERN" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+		.executor as $previous_executor | (.reservation_contract // null) as $prior_contract
+		| (.reservation_contract_reclaim // null) as $existing_reclaim
+		| .executor=$executor
+		| if $prior_contract == $contract then
+			.reservation_contract_reclaim={type:$type,prior_contract:$prior_contract,
+				previous_head:$previous_head,previous_executor:$previous_executor,reclaimed_at:$now}
+		  elif ($existing_reclaim.type == $type
+			and $existing_reclaim.prior_contract == $contract
+			and ($existing_reclaim.previous_head | test($sha_pattern))) then
+			.reservation_contract_reclaim=$existing_reclaim
+		  else del(.reservation_contract_reclaim) end
+		| del(.reservation_contract)
+	' <<<"$state_json") || return 1
 	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
 	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
 	_AIDEVOPS_RELEASE_LANE_RESULT="$_AIDEVOPS_RELEASE_LANE_RESULT_ACQUIRED"
@@ -247,7 +486,7 @@ release_lane_acquire() {
 		active=$(jq -r '.active' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 		active_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 		phase=$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-		if [[ "$active" == "true" ]]; then
+		if [[ "$active" == "$_AIDEVOPS_RELEASE_LANE_TRUE" ]]; then
 			printf 'ACTIVE_RELEASE_LANE source_pr=%s phase=%s tag=%s\n' "$active_pr" "$phase" \
 				"$(jq -r '.tag // "pending"' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
 			printf 'Inspect with: aidevops release status %s\n' "$active_pr"
@@ -322,9 +561,10 @@ release_lane_begin_aggregate_successor() {
 	state_json=$(jq -c --argjson stale "$stale_pr" --arg base "$base_sha" \
 		--arg expected "$expected_sources" --arg branch "$branch_name" --arg token "$operation_token" \
 		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" --argjson previous "$previous_state" '
+		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" \
+		--arg status_preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_PREPARING" --argjson previous "$previous_state" '
 		.phase=$preparing | .operation_token=$token | .updated_at=$now
-		| .aggregate_successor={status:"preparing",stale_pr:$stale,base_sha:$base,
+		| .aggregate_successor={status:$status_preparing,stale_pr:$stale,base_sha:$base,
 			expected_sources:$expected,branch:$branch,previous_state:$previous}
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
@@ -851,7 +1091,8 @@ release_lane_update() {
 	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
 		'.active == true and .source_pr == $source_pr and .operation_token == $token' \
 		<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
-	state_json=$(jq -c --arg phase "$phase" --arg tag "$tag_name" --arg preparing "preparing" \
+	state_json=$(jq -c --arg phase "$phase" --arg tag "$tag_name" \
+		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_PREPARING" \
 		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
 		.phase=$phase | .tag=(if $tag == "" then .tag else $tag end) | .updated_at=$now
 		| if $phase == $preparing then del(.prepublication_recovery) else . end
@@ -913,11 +1154,11 @@ _release_lane_pr_is_metadata_only_aggregate() {
 	local files_count=""
 	command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
 	pr_json=$(gh api "repos/${repo}/pulls/${pr_number}" 2>/dev/null) || return 1
-	jq -e --argjson pr "$pr_number" '
+	jq -e --argjson pr "$pr_number" --arg sha_pattern "$_AIDEVOPS_RELEASE_LANE_SHA_PATTERN" '
 		.state == "open" and .base.ref == "main"
 		and (.number == $pr)
-		and (.head.sha | test("^[0-9a-f]{40}$"))
-		and (.base.sha | test("^[0-9a-f]{40}$"))
+		and (.head.sha | test($sha_pattern))
+		and (.base.sha | test($sha_pattern))
 	' <<<"$pr_json" >/dev/null || return 1
 	body=$(jq -er '.body // ""' <<<"$pr_json") || return 1
 	identity_count=$(awk -v expected="Aidevops-Release-Aggregator-PR: ${pr_number}" \
@@ -1014,7 +1255,7 @@ release_lane_setup_guard() {
 		return 75
 		;;
 	esac
-	[[ "$(jq -r '.active' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" == "true" ]] || return 0
+	[[ "$(jq -r '.active' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" == "$_AIDEVOPS_RELEASE_LANE_TRUE" ]] || return 0
 	phase=$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	[[ "$phase" == "exact-tag-deployment" ]] || return 0
 	active_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1

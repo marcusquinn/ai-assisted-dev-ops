@@ -818,7 +818,7 @@ _should_run_llm_supervisor() {
 	local now_epoch
 	now_epoch=$(date +%s)
 
-	# 1. Daily sweep: run when the last successful LLM completion is stale.
+	# 1. Daily sweep: only a successful daily sweep advances its cadence.
 	# last_llm_run_epoch remains as the legacy success timestamp for older installs;
 	# last_llm_attempt_epoch is separate so failed runs do not suppress retries for
 	# a full daily interval.
@@ -829,7 +829,17 @@ _should_run_llm_supervisor() {
 	fi
 	last_llm_attempt_epoch=$(_pulse_read_epoch_file "${PULSE_DIR}/last_llm_attempt_epoch")
 
-	local llm_age=$((now_epoch - last_llm_success_epoch))
+	local last_daily_epoch="" last_success_mode=""
+	last_daily_epoch=$(_pulse_read_epoch_file "${PULSE_DIR}/last_daily_sweep_success_epoch")
+	if [[ "$last_daily_epoch" -eq 0 && -f "${PULSE_DIR}/last_llm_success_mode" ]]; then
+		IFS= read -r last_success_mode <"${PULSE_DIR}/last_llm_success_mode" || true
+		# Migrate only positively identified daily completion evidence. A recent
+		# stall/first-run success must not postpone an unobserved daily sweep.
+		if [[ "$last_success_mode" == "daily_sweep" ]]; then
+			last_daily_epoch="$last_llm_success_epoch"
+		fi
+	fi
+	local llm_age=$((now_epoch - last_daily_epoch))
 	if [[ "$llm_age" -ge "$PULSE_LLM_DAILY_INTERVAL" ]]; then
 		if _pulse_llm_failure_cooldown_active "$now_epoch" "$last_llm_success_epoch" "$last_llm_attempt_epoch"; then
 			return 1

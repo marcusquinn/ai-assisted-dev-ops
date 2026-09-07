@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - scope Pulse lifecycle process discovery to the current user's runtime on shared hosts
 - promote OpenCode 1.18.29 compatibility after changelog review
 
+## [3.32.334] - 2026-09-07
+
+### Fixed
+
+- fix worktree and pulse reliability
+- align sweep recovery with verified delivery
+
+## [3.32.333] - 2026-09-07
+
+### Fixed
+
+- bound rejected worker dependency provisioning attempts
+- reject unsafe Ollama summary URL schemes
+- preserve open PR progress (#31490)
+- recover stalled Pulse runtime safely (#31488)
+
 ## [3.32.332] - 2026-09-07
 
 ### Changed

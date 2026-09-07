@@ -37,9 +37,15 @@ The bot loads config from three sources (highest priority first):
   "autoAcceptFiles": false,
   "autoJoinGroups": false,
   "logLevel": "info",
+  "execApproval": {
+    "approvalTimeoutMs": 43200000
+  },
   "sessionIdleTimeout": 300
 }
 ```
+
+Pending command approvals remain valid for 12 hours by default. Override
+`execApproval.approvalTimeoutMs` with a duration in milliseconds when needed.
 
 ### Environment Variables
 

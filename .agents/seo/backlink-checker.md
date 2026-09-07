@@ -23,7 +23,7 @@ tools:
 
 - **Purpose**: Monitor backlinks, detect lost/broken links, and flag expired referring domains for manual review
 - **Data Sources**: Authorized Ahrefs/DataForSEO exports and registry/registrar expiry evidence
-- **Helpers**: `scripts/seo-export-ahrefs.sh`, `scripts/seo-export-dataforseo.sh` (backlink data export)
+- **Helper**: `scripts/seo-export-ahrefs.sh` (backlink data export)
 
 **Workflow**: Export backlink profile -> Identify lost/broken links -> Verify expiry evidence -> Rank reclamation leads. For current auction inventory and local opportunity reports, use `seo/domain-opportunities.md`.
 
@@ -42,7 +42,9 @@ Ahrefs endpoints used:
 
 ### DataForSEO Backlinks API (Alternative)
 
-> See `scripts/seo-export-dataforseo.sh` for the export implementation.
+> No DataForSEO Backlinks exporter is currently included. The existing
+> `scripts/seo-export-dataforseo.sh` helper exports ranked-keyword data and must
+> not be used as a backlink inventory.
 
 DataForSEO endpoints:
 - `/v3/backlinks/backlinks/live` - Live backlink data

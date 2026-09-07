@@ -32,6 +32,7 @@
 # Include guard
 [[ -n "${_PULSE_WRAPPER_CYCLE_LIB_LOADED:-}" ]] && return 0
 _PULSE_WRAPPER_CYCLE_LIB_LOADED=1
+_PULSE_CYCLE_DAILY_MODE="daily_sweep"
 
 # Defensive SCRIPT_DIR fallback (matches issue-sync-lib.sh pattern)
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -229,7 +230,7 @@ run_pulse() {
 	# causing "Argument list too long" on every pulse invocation. The agent
 	# reads the file via its Read tool instead. See: #4257
 	local pulse_command="/pulse"
-	if [[ "$trigger_mode" == "daily_sweep" ]]; then
+	if [[ "$trigger_mode" == "$_PULSE_CYCLE_DAILY_MODE" ]]; then
 		pulse_command="/pulse-sweep"
 	fi
 	local prompt
@@ -258,8 +259,10 @@ run_pulse() {
 
 	echo "[pulse-wrapper] opencode PID: $opencode_pid" >>"$LOGFILE"
 
-	# Run the watchdog loop (checks stale/idle/progress, guards children)
-	_run_pulse_watchdog "$opencode_pid" "$start_epoch" "$effective_cold_start_timeout"
+	# Run the watchdog loop (checks stale/idle/progress, guards children) and
+	# retain the child/watchdog outcome for LLM completion accounting.
+	local pulse_rc=0
+	_run_pulse_watchdog "$opencode_pid" "$start_epoch" "$effective_cold_start_timeout" || pulse_rc=$?
 
 	# Write IDLE sentinel — never delete the PID file (GH#4324).
 	echo "IDLE:$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$PIDFILE"
@@ -267,8 +270,12 @@ run_pulse() {
 	local end_epoch
 	end_epoch=$(date +%s)
 	local duration=$((end_epoch - start_epoch))
-	echo "[pulse-wrapper] Pulse completed at $(date -u +%Y-%m-%dT%H:%M:%SZ) (ran ${duration}s)" >>"$LOGFILE"
-	return 0
+	if [[ "$pulse_rc" -eq 0 ]]; then
+		echo "[pulse-wrapper] Pulse completed at $(date -u +%Y-%m-%dT%H:%M:%SZ) (ran ${duration}s)" >>"$LOGFILE"
+	else
+		echo "[pulse-wrapper] Pulse failed at $(date -u +%Y-%m-%dT%H:%M:%SZ) (ran ${duration}s, rc=${pulse_rc})" >>"$LOGFILE"
+	fi
+	return "$pulse_rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -318,6 +325,9 @@ _pulse_record_llm_success() {
 	# Keep the legacy file as successful-completion state for older helpers.
 	printf '%s\n' "$success_epoch" >"${PULSE_DIR}/last_llm_run_epoch" 2>/dev/null || return 1
 	printf '%s\n' "$trigger_mode" >"${PULSE_DIR}/last_llm_success_mode" 2>/dev/null || true
+	if [[ "$trigger_mode" == "$_PULSE_CYCLE_DAILY_MODE" ]]; then
+		printf '%s\n' "$success_epoch" >"${PULSE_DIR}/last_daily_sweep_success_epoch" 2>/dev/null || return 1
+	fi
 	echo "[pulse-wrapper] LLM supervisor completed successfully (trigger=${trigger_mode}, epoch=${success_epoch})" >>"$LOGFILE"
 	return 0
 }
@@ -343,7 +353,7 @@ _pulse_maybe_run_llm_supervisor() {
 			llm_trigger_mode=$(cat "${PULSE_DIR}/llm_trigger_mode" 2>/dev/null) || llm_trigger_mode="stall"
 		fi
 		if [[ "${PULSE_FORCE_LLM:-0}" == "1" && "$llm_trigger_mode" == "stall" ]]; then
-			llm_trigger_mode="daily_sweep"
+			llm_trigger_mode="$_PULSE_CYCLE_DAILY_MODE"
 		fi
 	fi
 

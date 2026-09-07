@@ -76,6 +76,38 @@ if [[ -e "${wt_dir}/node_modules/.bin" || -L "${wt_dir}/node_modules/.bin" ]]; t
 	fail "dispatcher-created canonical node_modules .bin link was not removed"
 fi
 
+# Rejected provisioning must consume the same directory budget as success.
+# Keep the real restore loop and lock; replace only the protected copy boundary.
+(
+	restore_repo="${TEST_TMP}/restore-repo"
+	restore_wt="${TEST_TMP}/restore-worktree"
+	for package in one two three four; do
+		mkdir -p "${restore_repo}/${package}/node_modules" "${restore_wt}/${package}"
+		printf '{}\n' >"${restore_wt}/${package}/package.json"
+	done
+	_provision_worktree_node_modules() {
+		restore_calls=$((restore_calls + 1))
+		case "$restore_mode" in
+		success) return 0 ;;
+		mixed) [[ "$restore_calls" -eq 1 ]] && return 0 ;;
+		esac
+		return 1
+	}
+	for restore_mode in rejected mixed success; do
+		for restore_limit in 0 1 2 invalid; do
+			restore_calls=0
+			expected_calls="$restore_limit"
+			[[ "$restore_limit" == invalid ]] && expected_calls=2
+			LOGFILE="${TEST_TMP}/restore.log" AIDEVOPS_WORKSPACE_DIR="$TEST_TMP" \
+				WORKTREE_NODE_MODULES_RESTORE_MAX_DIRS="$restore_limit" \
+				_dlw_restore_worktree_deps "$restore_wt" "$restore_repo" || fail "restore failed instead of continuing safely"
+			[[ "$restore_calls" -eq "$expected_calls" ]] || fail "${restore_mode} restore attempted ${restore_calls} directories with budget ${restore_limit}; expected ${expected_calls}"
+			[[ ! -d "$(_dlw_node_modules_restore_lock_dir)" ]] || fail "restore left its lock behind"
+		done
+	done
+) || exit 1
+printf 'PASS: rejected, mixed and successful provisioning respect directory attempt budgets\n'
+
 if ! declare -F _dlw_append_node_tool_env >/dev/null 2>&1; then
 	fail "worker launch does not provide a local command path for canonical Node tools"
 fi

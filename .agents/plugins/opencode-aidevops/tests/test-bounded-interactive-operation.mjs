@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -96,6 +96,29 @@ describe("bounded interactive operations", () => {
     assert.equal(result.command_execution, "observed");
     assert.match(result.supervisor_runtime, /^node v\d+\./);
     assert.equal(JSON.stringify(result).includes("phase-one"), false);
+  });
+
+  test("an outside cwd requires a session-owned worktree resolution before spawn", async () => {
+    const linked = mkdtempSync(join(tmpdir(), "aidevops-bounded-linked-"));
+    let resolution;
+    const instance = manager({
+      resolveWorktreeRoot: async (requested, projectRoot, context, options) => {
+        resolution = { requested, projectRoot, context, options };
+        return { root: linked, linked: true };
+      },
+    });
+    const started = await instance.start({
+      command: [process.execPath, "-e", "process.exit(0)"],
+      cwd: linked,
+      budgetMs: 1000,
+    }, owner);
+    assert.equal((await terminal(instance, started.operation_id)).state, "succeeded");
+    assert.equal(resolution.requested, realpathSync(linked));
+    assert.equal(resolution.projectRoot, realpathSync(root));
+    assert.equal(resolution.context, owner);
+    assert.equal(resolution.options.subject, "Operation");
+    assert.equal(resolution.options.allowStartupRoot, true);
+    rmSync(linked, { recursive: true, force: true });
   });
 
   test("failure, timeout, and scoped cancellation cannot appear as success", async () => {

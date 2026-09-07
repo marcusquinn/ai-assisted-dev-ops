@@ -167,6 +167,10 @@ export class ApprovalManager {
   /** Format the approval timeout as a human-readable string */
   formatTimeout(): string {
     const seconds = Math.round(this.config.approvalTimeoutMs / 1000);
+    if (seconds >= 60 * 60) {
+      const hours = Math.round(seconds / (60 * 60));
+      return `${hours}h`;
+    }
     if (seconds >= 60) {
       const minutes = Math.round(seconds / 60);
       return `${minutes}m`;

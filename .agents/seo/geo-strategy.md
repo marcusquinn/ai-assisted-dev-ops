@@ -18,7 +18,7 @@ tools:
 
 # GEO Strategy
 
-Increase citation likelihood in AI search by matching decision criteria with verifiable page content on pages that already rank. Ranking is prerequisite — unranked pages cannot be consistently cited. Optimize for deterministic retrieval signals, not daily answer volatility.
+Improve AI-search discovery and citation opportunities with verifiable, criteria-matching content. Conventional search visibility can help discovery, but ranking is neither a universal prerequisite nor a guarantee of AI citation. Verify retrieval and citation separately for each engine and mode; do not optimise around one day's answer volatility.
 
 **Inputs:** intent ledger, core query set, top landing pages, page types, competitor set, proof assets (certifications, policies, prices, case evidence)
 **Outputs:** criteria matrix, source-ID evidence ledger, page-type gap map, weighted implementation plan, per-engine report lines
@@ -30,9 +30,10 @@ Increase citation likelihood in AI search by matching decision criteria with ver
 - Normalize observed and proposed queries with `conversational-search-intent.md`;
   retain source IDs, user job, constraints, grounding hypothesis, and confidence
 - Select 5-20 intents that influence revenue or lead quality; map each to an existing target page
-- Exclude intents without a realistic ranking path
+- Prioritise intents with a plausible discovery path; record conventional search, direct fetch, or other observed retrieval routes rather than excluding pages solely on rank
 - Classify by grounding likelihood to avoid optimizing non-retrieval prompts
 - Classify each target as PDP, category, homepage, article, local, SaaS feature, pricing, comparison, glossary, use-case, or research/report before scoring tactics
+- Before corpus expansion, entity markup, or multi-domain recommendations, use `entity-evidence-audit.md` to audit identity, evidence independence, and internal links
 
 ### 2) Extract decision criteria
 
@@ -57,6 +58,7 @@ Increase citation likelihood in AI search by matching decision criteria with ver
 - Monitor citations directionally, not as the only success metric
 - Report AIO, Gemini, ChatGPT, AI Mode, and Perplexity on separate per-engine lines; never aggregate AI Share of Voice without the underlying engine-level evidence
 - Re-run criteria extraction monthly or after major model shifts
+- Before testing causal claims, use `seo-geo-experiment-design.md`; separate recognition, corroboration, and unbranded recommendation from ranking and citation
 
 ## Anti-Patterns
 
@@ -75,16 +77,16 @@ Increase citation likelihood in AI search by matching decision criteria with ver
 - Prefer additive edits to existing pages before creating net-new pages
 - Weight tactics with `seo-audit-skill/aeo-geo-patterns/04-page-type-tactic-matrix.md` before proposing copy, schema, FAQ, comparison, or proof work
 - Keep key pages accessible to major AI/search crawlers
-- One topic per URL; titles, H1s, and headings must include category terms, feature type, year, and pricing where applicable
+- Give each URL a distinct primary intent; use accurate category/feature language and include year or pricing only when useful and maintained, not as a repeated entity formula
 - Keep pricing, feature lists, and comparison data in crawlable HTML — not behind JS rendering or gated forms
-- AI models use `site:yourdomain.com [category] features [year]` patterns to extract detail from known-relevant domains
+- Search-enabled systems may use site-restricted category/feature queries; record exposed query traces before attributing a particular query pattern to an engine
 
 ### Review platform parity
 
-AI models query G2, Capterra, and TrustRadius as a validation stage after extracting brand-site claims:
+Review platforms such as G2, Capterra, and TrustRadius can supply relevant evidence; their use is engine-, query-, and category-dependent, not a universal validation stage:
 
 - Maintain complete profiles with the same canonical facts (pricing, features, integrations) as the primary site
-- Consistent product naming across platforms; wrong category = invisible to model queries
+- Keep product naming consistent and categories accurate; assess actual discovery gaps rather than declaring an incorrectly categorised product invisible
 - Respond to reviews — AI models may extract vendor responses as support quality evidence
 - Monitor profiles quarterly; add TrustRadius, PeerSpot, or vertical-specific sites where G2/Capterra coverage is thin
 

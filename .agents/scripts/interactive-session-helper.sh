@@ -230,12 +230,13 @@ _isc_normalize_owned_pr() {
 	_isc_can_manage_issue_state "$slug" "$user" || return 1
 	metadata=$(_isc_read_claim_metadata "$issue" "$slug") || return 1
 	jq -e --arg user "$user" '
-		.state == "OPEN" and ([.assignees[].login] == [$user]) and
-		([.labels[].name] | index("status:in-review") != null)
+		.state == "OPEN" and ([.assignees[].login] == [$user])
 	' <<<"$metadata" >/dev/null || return 1
 	prs=$(gh pr list --repo "$slug" --head "$branch" --state open \
 		--json number,isCrossRepository,closingIssuesReferences 2>/dev/null) || return 1
 	[[ "$(jq 'length' <<<"$prs")" == 0 ]] && return 0
+	jq -e '([.labels[].name] | index("status:in-review") != null)' \
+		<<<"$metadata" >/dev/null || return 1
 	pr=$(jq -er --argjson issue "$issue" '
 		select(length == 1) | .[0] | select(.isCrossRepository == false) |
 		select([.closingIssuesReferences[].number] == [$issue]) | .number

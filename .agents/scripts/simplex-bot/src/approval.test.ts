@@ -155,16 +155,12 @@ describe("ApprovalManager", () => {
 
   describe("timeout", () => {
     test("expires request after timeout and notifies requester", async () => {
-      mock.timers.enable({ apis: ["setTimeout"] });
-
       const replyMock = mock(async (_text: string): Promise<void> => {});
       const shortTimeout = new ApprovalManager({ approvalTimeoutMs: 100 });
       const req = shortTimeout.createRequest("docker ps", 1, "alice", replyMock);
 
       try {
-        mock.timers.tick(101);
-        await Promise.resolve();
-        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 200));
 
         // Request should be expired and cleaned up
         expect(shortTimeout.getRequest(req.id)).toBeUndefined();
@@ -177,7 +173,6 @@ describe("ApprovalManager", () => {
         expect(callArg).toContain(req.id);
       } finally {
         shortTimeout.shutdown();
-        mock.timers.reset();
       }
     });
   });
@@ -200,6 +195,11 @@ describe("ApprovalManager", () => {
   // ===========================================================================
 
   describe("custom config", () => {
+    test("defaults to a 12-hour approval window", () => {
+      expect(DEFAULT_EXEC_APPROVAL_CONFIG.approvalTimeoutMs).toBe(12 * 60 * 60 * 1000);
+      expect(manager.formatTimeout()).toBe("12h");
+    });
+
     test("custom allowlist overrides defaults", () => {
       const custom = new ApprovalManager({
         allowlist: ["git status", "git log"],
@@ -225,6 +225,9 @@ describe("ApprovalManager", () => {
 
       const m3 = new ApprovalManager({ approvalTimeoutMs: 120_000 });
       expect(m3.formatTimeout()).toBe("2m");
+
+      const m4 = new ApprovalManager({ approvalTimeoutMs: 12 * 60 * 60 * 1000 });
+      expect(m4.formatTimeout()).toBe("12h");
     });
   });
 });

@@ -12,6 +12,7 @@ import json
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 # Word count threshold: emails with <= this many words use heuristic summary
@@ -28,6 +29,19 @@ ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
 
 # Anthropic model for summarisation (cheapest tier)
 ANTHROPIC_MODEL = 'claude-haiku-4-20250414'
+
+
+def _validated_ollama_api_url():
+    """Return the configured Ollama HTTP(S) URL, or None when it is unsafe."""
+    try:
+        parsed = urllib.parse.urlsplit(OLLAMA_API_URL)
+        hostname = parsed.hostname
+    except (TypeError, ValueError):
+        return None
+
+    if parsed.scheme.lower() not in {'http', 'https'} or not hostname:
+        return None
+    return OLLAMA_API_URL
 
 
 def strip_markdown(text):
@@ -136,14 +150,20 @@ def _summarise_with_ollama(plain_text, subject):
         'options': {'temperature': 0.3, 'num_predict': 100}
     }).encode('utf-8')
 
+    api_url = _validated_ollama_api_url()
+    if not api_url:
+        return None
+
     req = urllib.request.Request(
-        OLLAMA_API_URL,
+        api_url,
         data=payload,
         headers={'Content-Type': 'application/json'},
         method='POST'
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # _validated_ollama_api_url restricts this configurable target to an
+        # HTTP(S) URL with an authority before the request is constructed.
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected,python_urlopen_rule-urllib-urlopen
             data = json.loads(resp.read().decode('utf-8'))
             summary = data.get('response', '').strip()
             if summary:

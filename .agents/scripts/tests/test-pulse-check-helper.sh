@@ -285,11 +285,11 @@ if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FI
   if [[ " $* " == *"private/repo-one"* ]]; then
     cat <<'JSON'
 [
-  {"number":11,"title":"private eligible","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:standard"}]},
-  {"number":12,"title":"private assigned","updatedAt":"2000-01-01T00:00:00Z","assignees":[{"login":"worker"}],"labels":[{"name":"auto-dispatch"},{"name":"status:queued"},{"name":"tier:standard"}]},
-  {"number":13,"title":"private nmr","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:thinking"},{"name":"needs-maintainer-review"}]},
-  {"number":14,"title":"private malformed","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]},
-  {"number":15,"title":"private active review","updatedAt":"2000-01-01T00:00:00Z","assignees":[{"login":"owner"}],"labels":[{"name":"auto-dispatch"},{"name":"status:in-review"},{"name":"tier:standard"}]}
+  {"number":11,"title":"private eligible","createdAt":"2000-01-01T00:00:00Z","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:standard"}]},
+  {"number":12,"title":"private assigned","createdAt":"2000-01-01T00:00:00Z","updatedAt":"2000-01-01T00:00:00Z","assignees":[{"login":"worker"}],"labels":[{"name":"auto-dispatch"},{"name":"status:queued"},{"name":"tier:standard"}]},
+  {"number":13,"title":"private nmr","createdAt":"2000-01-01T00:00:00Z","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:thinking"},{"name":"needs-maintainer-review"}]},
+  {"number":14,"title":"private malformed","createdAt":"2000-01-01T00:00:00Z","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]},
+  {"number":15,"title":"private active review","createdAt":"2000-01-01T00:00:00Z","updatedAt":"2000-01-01T00:00:00Z","assignees":[{"login":"owner"}],"labels":[{"name":"auto-dispatch"},{"name":"status:in-review"},{"name":"tier:standard"}]}
 ]
 JSON
   else
@@ -593,13 +593,16 @@ chmod +x "${TEST_ROOT}/current-state-shortfall.sh"
 SHORTFALL_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=shortfall" \
 	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
 SHORTFALL_IDS=$(printf '%s' "$SHORTFALL_OUT" | jq -r '[.findings[].id] | sort | join(",")')
-assert_eq "active workers do not hide eligible queue shortfall" "auto-dispatch-missing-tier-labels,pulse-eligible-queue-under-target,pulse-inactive-nmr-holds" "$SHORTFALL_IDS"
+assert_eq "active workers do not hide eligible queue shortfall" "auto-dispatch-missing-tier-labels,pulse-eligible-queue-under-target,pulse-inactive-nmr-holds,pulse-no-durable-progress-hour" "$SHORTFALL_IDS"
 assert_eq "queue shortfall remains a maintainer advisory" "medium" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-eligible-queue-under-target") | .severity')"
 assert_eq "queue shortfall does not auto-file a non-actionable issue" "false" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-eligible-queue-under-target") | .autofile')"
 assert_eq "shortfall fixture has one eligible issue" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.eligible_available_unassigned')"
 assert_eq "shortfall fixture distinguishes assigned work" "2" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.assigned_in_flight')"
 assert_eq "shortfall fixture distinguishes held work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.blocked_explicit_hold')"
 assert_eq "active review ownership is not an explicit hold" "2" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.blocked_labels')"
+assert_eq "durable-progress finding distinguishes owned targets" "2" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.no_durable_progress_owned')"
+assert_eq "durable-progress finding distinguishes unowned targets" "2" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.no_durable_progress_unowned')"
+assert_contains "durable-progress recovery prioritizes verified ownership" "owned_without_durable_progress=2" "$SHORTFALL_OUT"
 assert_contains "shortfall evidence does not claim assignment proves liveness" "assigned_or_in_flight=2" "$SHORTFALL_OUT"
 assert_contains "NMR advisory names updatedAt inactivity basis" "issue_updatedAt_not_label_application_time" "$SHORTFALL_OUT"
 assert_eq "inactive NMR holds remain visible" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '[.findings[] | select(.id == "pulse-inactive-nmr-holds")] | length')"
@@ -679,6 +682,11 @@ format_rc=0
 AIDEVOPS_BODY_FORMAT_STRICT=1 bash "${SCRIPT_DIR}/issue-body-format-helper.sh" check "$BODY" || format_rc=$?
 assert_eq "generated finding passes strict execution body contract" "0" "$format_rc"
 assert_contains "generated recovery requires outcome evidence" "worker exits alone do not establish recovery" "$BODY"
+
+reproducer_rc=0
+bash "${SCRIPT_DIR}/log-issue-helper.sh" validate-brief "${TEST_ROOT}/capture.txt.body" || reproducer_rc=$?
+assert_eq "generated finding passes production framework-bug reproducer validation" "0" "$reproducer_rc"
+assert_contains "generated finding distinguishes symptom from cause" "**Causal status**: unconfirmed investigation" "$BODY"
 
 rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
 READ_APPLY_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_PERMISSION_FIXTURE=read" "$HELPER" apply --repo owner/aidevops 2>&1)

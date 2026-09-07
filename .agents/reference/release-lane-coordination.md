@@ -97,8 +97,28 @@ Competing release starts use the same bounded recovery for eligible reservations
 ordinary merge guards do not read or mutate publisher ownership. Status remains read-only.
 
 Age alone never unlocks a lane. Live/recent reservations, legacy/foreign owners,
-preparing/publication phases and aggregation recovery are not automatically
-released. For a reservation without a recorded tag, tag-based `reconcile` may
+publication phases and aggregation recovery are not automatically released. A
+stale `preparing` lane is resumable only by the exact same authorized source and
+increment when the local executor is verifiably dead, its deterministic detached
+worktree remains isolated at the pinned snapshot, no release process survives,
+the persisted source manifest still matches, and the intended tag, protected
+release branch, GitHub release, npm version, and Homebrew version are all proven
+absent. The publisher rotates the operation token through the lane compare-and-swap,
+retains durable `preparing_recovery` evidence, and restarts from a fresh copy of
+the pinned commit; lookup uncertainty or any existing artifact refuses recovery.
+Same-source reservation reclaim still removes automatic eligibility, but now
+records a `same-source-reclaim/v1` marker when it removes a modern fenced
+contract. For lanes reclaimed before that marker existed, recovery must verify
+the bounded authoritative release-lane history: every intervening file revision
+must remain active, tagless and pre-publication while retaining the immutable
+snapshot provenance back to a
+`fenced-prepublication/v1` ancestor. Missing, truncated, divergent or unreadable
+lineage fails closed. A pre-binding ancestor may retain only its compatible
+legacy source subset; once `snapshot_manifest_bound` is true, every revision must
+match the current exact manifest. Successful recovery restores the fenced
+contract and keeps the lineage proof in `reservation_contract_recovery` within
+the same lane CAS.
+For a reservation without a recorded tag, tag-based `reconcile` may
 have nothing to resume: the authorized release owner must restart the same
 source with its original increment and persisted intent. This does not grant a
 new session publication authority. Do not report background progress without

@@ -193,7 +193,7 @@ run_legacy_and_api_failure_test() (
 )
 
 run_default_stale_boundary_and_fencing_test() (
-	local original_state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"reserved","tag":null,"updated_at":"2020-01-01T00:00:00Z","operation_token":"token-old","terminal_receipt":null}'
+	local original_state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"reserved","tag":null,"updated_at":"2020-01-01T00:00:00Z","operation_token":"token-old","terminal_receipt":null,"reservation_contract":"fenced-prepublication/v1"}'
 	local state="$original_state"
 	local written=""
 	export AIDEVOPS_TEST_NOW_EPOCH=1000000299
@@ -230,6 +230,19 @@ run_default_stale_boundary_and_fencing_test() (
 	release_lane_acquire test/repo 101 101 >/dev/null || return 1
 	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "acquired" && "$(jq -r '.phase' <<<"$written")" == "reserved" &&
 	"$(jq -r '.operation_token' <<<"$written")" != "token-old" && "$writes" -eq 1 ]] || return 1
+	jq -e '.reservation_contract == null
+		and .reservation_contract_reclaim.type == "same-source-reclaim/v1"
+		and .reservation_contract_reclaim.prior_contract == "fenced-prepublication/v1"
+		and .reservation_contract_reclaim.previous_head == "1111111111111111111111111111111111111111"' \
+		<<<"$written" >/dev/null || return 1
+	_AIDEVOPS_RELEASE_LANE_TOKEN="token-old"
+	state=$(jq -c '.updated_at="2020-01-01T00:00:00Z"' <<<"$written") || return 1
+	_release_lane_executor_observe() { printf '{"state":"dead"}\n'; }
+	release_lane_acquire test/repo 101 101 >/dev/null || return 1
+	[[ "$writes" -eq 2 ]] || return 1
+	jq -e '.reservation_contract_reclaim.type == "same-source-reclaim/v1"
+		and .reservation_contract_reclaim.previous_head == "1111111111111111111111111111111111111111"' \
+		<<<"$written" >/dev/null || return 1
 	_AIDEVOPS_RELEASE_LANE_TOKEN="token-old"
 	if release_lane_update test/repo 101 preparing; then
 		return 1
@@ -620,6 +633,161 @@ run_aggregate_successor_transaction_test() {
 	return $?
 }
 
+run_dead_preparing_recovery_test() (
+	local expected='101@1111111111111111111111111111111111111111'
+	local old_token="token-old"
+	local written=""
+	local evidence='{"type":"preparing-recovery/v1","attempted_tag":"v1.2.4","expected_sources":"101@1111111111111111111111111111111111111111","worktree_head":"2222222222222222222222222222222222222222","worktree_state":"isolated","surviving_process":"absent","remote_tag":"absent","github_release":"absent","npm":"absent","homebrew":"absent","protected_branch":"absent","checked_at":"2026-09-07T18:00:00Z"}'
+	local state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101@1111111111111111111111111111111111111111","phase":"preparing","tag":null,"owner":"process-42","operation_token":"token-old","updated_at":"2020-01-01T00:00:00Z","terminal_receipt":null,"reservation_contract":"fenced-prepublication/v1","executor":{"host_id":"local","pid":42,"started_at":"old"},"snapshot_sha":"2222222222222222222222222222222222222222","snapshot_base":"1111111111111111111111111111111111111111","snapshot_base_tag":"v1.2.3","snapshot_base_object":"3333333333333333333333333333333333333333","snapshot_manifest_bound":true}'
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		return 0
+	}
+	_release_lane_executor_observe() { printf '{"state":"dead","reason":"process-absent"}\n'; }
+	_release_lane_executor_capture() { printf '{"host_id":"local","pid":99,"started_at":"new"}\n'; }
+	_release_lane_write() {
+		[[ "$1" == "test/repo" && "$3" == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ]] || return 1
+		written="$2"
+		state="$2"
+		return 0
+	}
+	AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null || return 1
+	jq -e --arg old "$old_token" '
+		.phase == "reserved" and .active == true and .tag == null
+		and .operation_token != $old and .executor.pid == 99
+		and .preparing_recovery.previous_phase == "preparing"
+		and .preparing_recovery.previous_executor.pid == 42
+		and .preparing_recovery.attempted_tag == "v1.2.4"
+		and .preparing_recovery.evidence.remote_tag == "absent"
+	' <<<"$written" >/dev/null
+	state=$(jq -c '.phase="preparing" | .updated_at="2020-01-01T00:00:00Z"
+		| .executor={host_id:"local",pid:77,started_at:"retry"}' <<<"$state") || return 1
+	AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null || return 1
+	jq -e '.phase == "reserved" and (.preparing_recovery.revalidations | length) == 1
+		and .preparing_recovery.revalidations[0].previous_executor.pid == 77' <<<"$written" >/dev/null
+)
+
+run_reclaimed_contract_recovery_test() (
+	local expected='101@1111111111111111111111111111111111111111'
+	local evidence='{"type":"preparing-recovery/v1","attempted_tag":"v1.2.4","expected_sources":"101@1111111111111111111111111111111111111111","worktree_head":"2222222222222222222222222222222222222222","worktree_state":"isolated","surviving_process":"absent","remote_tag":"absent","github_release":"absent","npm":"absent","homebrew":"absent","protected_branch":"absent","checked_at":"2026-09-07T18:00:00Z"}'
+	local base='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101@1111111111111111111111111111111111111111","phase":"preparing","tag":null,"owner":"process-42","operation_token":"token-old","updated_at":"2020-01-01T00:00:00Z","terminal_receipt":null,"executor":{"host_id":"local","pid":42,"started_at":"old"},"snapshot_sha":"2222222222222222222222222222222222222222","snapshot_base":"1111111111111111111111111111111111111111","snapshot_base_tag":"v1.2.3","snapshot_base_object":"3333333333333333333333333333333333333333","snapshot_manifest_bound":true}'
+	local ancestor=""
+	local state="$base"
+	local written=""
+	ancestor=$(jq -c '.phase="reserved" | .expected_sources="101"
+		| .reservation_contract="fenced-prepublication/v1"
+		| .snapshot_manifest_bound=null' <<<"$base") || return 1
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+		return 0
+	}
+	_release_lane_history_heads() {
+		printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+	}
+	_release_lane_state_at_head() {
+		[[ "$2" == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ||
+			"$2" == cccccccccccccccccccccccccccccccccccccccc ]] || return 1
+		printf '%s\n' "$ancestor"
+	}
+	_release_lane_executor_observe() { printf '{"state":"dead","reason":"process-absent"}\n'; }
+	_release_lane_executor_capture() { printf '{"host_id":"local","pid":99,"started_at":"new"}\n'; }
+	_release_lane_write() {
+		[[ "$1" == "test/repo" && "$3" == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] || return 1
+		written="$2"
+		return 0
+	}
+	AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null || return 1
+	jq -e '
+		.phase == "reserved" and .reservation_contract == "fenced-prepublication/v1"
+		and .reservation_contract_recovery.type == "same-source-reclaim/v1"
+		and .reservation_contract_recovery.ancestor_head == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		and .preparing_recovery.attempted_tag == "v1.2.4"
+	' <<<"$written" >/dev/null || return 1
+	state=$(jq -c '.reservation_contract_reclaim={type:"same-source-reclaim/v1",
+		prior_contract:"fenced-prepublication/v1",previous_head:("c" * 40)}' <<<"$base") || return 1
+	AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null || return 1
+	jq -e '.reservation_contract == "fenced-prepublication/v1"
+		and .reservation_contract_recovery.type == "same-source-reclaim/v1"' <<<"$written" >/dev/null
+)
+
+run_reclaimed_contract_lineage_refusal_test() (
+	local expected='101@1111111111111111111111111111111111111111'
+	local evidence='{"type":"preparing-recovery/v1","attempted_tag":"v1.2.4","expected_sources":"101@1111111111111111111111111111111111111111","worktree_head":"2222222222222222222222222222222222222222","worktree_state":"isolated","surviving_process":"absent","remote_tag":"absent","github_release":"absent","npm":"absent","homebrew":"absent","protected_branch":"absent","checked_at":"2026-09-07T18:00:00Z"}'
+	local state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101@1111111111111111111111111111111111111111","phase":"preparing","tag":null,"owner":"process-42","operation_token":"token-old","updated_at":"2020-01-01T00:00:00Z","terminal_receipt":null,"executor":{"host_id":"local","pid":42,"started_at":"old"},"snapshot_sha":"2222222222222222222222222222222222222222","snapshot_base":"1111111111111111111111111111111111111111","snapshot_base_tag":"v1.2.3","snapshot_base_object":"3333333333333333333333333333333333333333","snapshot_manifest_bound":true}'
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+		return 0
+	}
+	_release_lane_history_heads() { printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; }
+	if AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null 2>&1; then
+		return 1
+	fi
+	state=$(jq -c '.reservation_contract_reclaim={type:"unknown",prior_contract:"fenced-prepublication/v1",
+		previous_head:("c" * 40)}' <<<"$state") || return 1
+	if AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null 2>&1; then
+		return 1
+	fi
+	state=$(jq -c '.reservation_contract_reclaim={type:"same-source-reclaim/v1",
+		prior_contract:"fenced-prepublication/v1",previous_head:("c" * 40)}' <<<"$state") || return 1
+	_release_lane_state_at_head() {
+		jq -c '.snapshot_sha=("4" * 40) | .reservation_contract="fenced-prepublication/v1"' <<<"$state"
+	}
+	if AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null 2>&1; then
+		return 1
+	fi
+	return 0
+)
+
+run_dead_preparing_refusal_test() (
+	local expected='101@1111111111111111111111111111111111111111'
+	local evidence='{"type":"preparing-recovery/v1","attempted_tag":"v1.2.4","expected_sources":"101@1111111111111111111111111111111111111111","worktree_head":"2222222222222222222222222222222222222222","worktree_state":"isolated","surviving_process":"absent","remote_tag":"absent","github_release":"absent","npm":"absent","homebrew":"absent","protected_branch":"absent","checked_at":"2026-09-07T18:00:00Z"}'
+	local base='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101@1111111111111111111111111111111111111111","phase":"preparing","tag":null,"owner":"process-42","operation_token":"token-old","updated_at":"2020-01-01T00:00:00Z","terminal_receipt":null,"reservation_contract":"fenced-prepublication/v1","executor":{"host_id":"local","pid":42,"started_at":"old"},"snapshot_sha":"2222222222222222222222222222222222222222","snapshot_base":"1111111111111111111111111111111111111111","snapshot_base_tag":"v1.2.3","snapshot_base_object":"3333333333333333333333333333333333333333","snapshot_manifest_bound":true}'
+	local state=""
+	local executor_state="dead"
+	local write_rc=0
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		return 0
+	}
+	_release_lane_executor_observe() { printf '{"state":"%s"}\n' "$executor_state"; }
+	_release_lane_executor_capture() { printf '{"host_id":"local","pid":99,"started_at":"new"}\n'; }
+	_release_lane_write() { return "$write_rc"; }
+	_release_lane_history_heads() { return 1; }
+	for executor_state in live foreign unknown; do
+		state="$base"
+		if AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+			release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null 2>&1; then
+			return 1
+		fi
+	done
+	executor_state="dead"
+	for transform in '.tag="v1.2.4"' '.terminal_receipt="published"' '.phase="remote-publication"' '.preparing_recovery={}' '.snapshot_manifest_bound=false' '.expected_sources="101"'; do
+		state=$(jq -c "$transform" <<<"$base") || return 1
+		if AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+			release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null 2>&1; then
+			return 1
+		fi
+	done
+	state="$base"
+	write_rc=2
+	if AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 \
+		release_lane_recover_dead_preparing test/repo 101 "$expected" v1.2.4 "$evidence" >/dev/null 2>&1; then
+		return 1
+	fi
+	return 0
+)
+
 if run_competing_source_test; then assert_result 'competing source receives active lane and reconcile action' true; else assert_result 'competing source receives active lane and reconcile action' false; fi
 if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
 if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
@@ -636,6 +804,10 @@ if run_reserved_aggregate_authorization_test; then assert_result 'reserved aggre
 if run_failed_prepublication_reopen_test; then assert_result 'verified failed pre-publication lane recovery rotates ownership and rejects unsafe states' true; else assert_result 'verified failed pre-publication lane recovery rotates ownership and rejects unsafe states' false; fi
 if run_failed_prepublication_resume_guard_test; then assert_result 'recovered pre-publication markers revalidate fenced refreshes and clear only at preparing' true; else assert_result 'recovered pre-publication markers revalidate fenced refreshes and clear only at preparing' false; fi
 if run_aggregate_successor_transaction_test; then assert_result 'successor aggregation retries converge through one lane CAS transaction' true; else assert_result 'successor aggregation retries converge through one lane CAS transaction' false; fi
+if run_dead_preparing_recovery_test; then assert_result 'dead tagless preparing recovery rotates ownership and preserves repeated recovery evidence' true; else assert_result 'dead tagless preparing recovery rotates ownership and preserves repeated recovery evidence' false; fi
+if run_reclaimed_contract_recovery_test; then assert_result 'reclaimed fenced contract recovers through durable marker or verified immutable lineage' true; else assert_result 'reclaimed fenced contract recovers through durable marker or verified immutable lineage' false; fi
+if run_reclaimed_contract_lineage_refusal_test; then assert_result 'missing or unknown reclaim lineage remains fail closed' true; else assert_result 'missing or unknown reclaim lineage remains fail closed' false; fi
+if run_dead_preparing_refusal_test; then assert_result 'preparing recovery refuses live, foreign, unknown, published, mismatched, and raced lanes' true; else assert_result 'preparing recovery refuses live, foreign, unknown, published, mismatched, and raced lanes' false; fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

@@ -24,6 +24,8 @@ source "${SCRIPT_DIR}/pulse-dispatch-engine.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-instance-lock.sh"
 # shellcheck source=/dev/null
+source "${SCRIPT_DIR}/pulse-watchdog.sh"
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-wrapper-cycle.sh"
 
 fail() {
@@ -71,5 +73,93 @@ _pulse_record_llm_failure "daily_sweep" "7"
 [[ ! -f "${PULSE_DIR}/last_llm_success_epoch" && ! -f "${PULSE_DIR}/last_llm_run_epoch" ]] || fail "failure wrote success timestamp"
 _pulse_record_llm_success "daily_sweep"
 [[ -f "${PULSE_DIR}/last_llm_success_epoch" && -f "${PULSE_DIR}/last_llm_run_epoch" ]] || fail "success timestamps missing"
+
+now_epoch=$(date +%s)
+daily_epoch=$((now_epoch - 1000))
+printf '%s\n' "$daily_epoch" >"${PULSE_DIR}/last_daily_sweep_success_epoch"
+printf '%s 0 0\n' "$now_epoch" >"${PULSE_DIR}/backlog_snapshot.txt"
+_pulse_record_llm_success "stall"
+_should_run_llm_supervisor || fail "successful stall run postponed an overdue daily sweep"
+[[ "$(<"${PULSE_DIR}/llm_trigger_mode")" == daily_sweep ]] || fail "overdue sweep did not select daily mode"
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "stall changed daily completion evidence"
+_pulse_record_llm_success "first_run"
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "first-run changed daily completion evidence"
+_pulse_record_llm_failure "daily_sweep" 7
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "failed daily sweep advanced completion evidence"
+mv "${PULSE_DIR}/last_llm_success_epoch" "${PULSE_DIR}/saved-success"
+mkdir "${PULSE_DIR}/last_llm_success_epoch"
+if _pulse_record_llm_success "daily_sweep" 2>/dev/null; then
+	fail "generic success write failure was ignored"
+fi
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "partial state write advanced daily cadence"
+rmdir "${PULSE_DIR}/last_llm_success_epoch"
+mv "${PULSE_DIR}/saved-success" "${PULSE_DIR}/last_llm_success_epoch"
+_pulse_record_llm_success "daily_sweep"
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" -ge "$now_epoch" ]] || fail "successful daily sweep did not advance its own clock"
+if _should_run_llm_supervisor; then
+	fail "recent daily success triggered another sweep with unchanged fresh backlog"
+fi
+
+# Migration may reuse a positively identified daily completion, not a stall.
+rm -f "${PULSE_DIR}/last_daily_sweep_success_epoch"
+if _should_run_llm_supervisor; then
+	fail "known legacy daily completion was ignored"
+fi
+_pulse_record_llm_success "stall"
+_should_run_llm_supervisor || fail "legacy stall completion suppressed first independently tracked daily sweep"
+
+# Preserve direct child failure through the watchdog and actual run_pulse()
+# boundary, so _pulse_maybe_run_llm_supervisor never advances success state.
+PULSE_COLD_START_TIMEOUT=60
+PULSE_COLD_START_TIMEOUT_UNDERFILLED=60
+HEADLESS_RUNTIME_HELPER=false
+PIDFILE="${PULSE_DIR}/pulse.pid"
+STATE_FILE="${PULSE_DIR}/state.md"
+PULSE_MODEL=""
+( exit 7 ) &
+failed_child_pid=$!
+if _run_pulse_watchdog "$failed_child_pid" "$(date +%s)" "$PULSE_COLD_START_TIMEOUT"; then
+	fail "watchdog converted failed child exit to success"
+fi
+
+dead_pid=999987
+while ps -p "$dead_pid" >/dev/null 2>&1; do
+	dead_pid=$((dead_pid + 1))
+done
+if _run_pulse_watchdog "$dead_pid" "$(date +%s)" "$PULSE_COLD_START_TIMEOUT"; then
+	fail "watchdog converted unreapable child to success"
+fi
+
+_check_watchdog_conditions() {
+	printf '%s\n' "STOP_FLAG:test watchdog stop" "0" "0" "false" "0"
+	return 0
+}
+_kill_tree() {
+	kill "$1" 2>/dev/null || true
+	return 0
+}
+sleep 30 &
+watched_child_pid=$!
+if _run_pulse_watchdog "$watched_child_pid" "$(date +%s)" "$PULSE_COLD_START_TIMEOUT"; then
+	fail "watchdog stop returned success"
+fi
+unset -f _check_watchdog_conditions _kill_tree
+
+rm -f "${PULSE_DIR}/last_llm_success_epoch" "${PULSE_DIR}/last_llm_run_epoch" \
+	"${PULSE_DIR}/last_daily_sweep_success_epoch"
+PULSE_FORCE_LLM=1
+_compute_initial_underfill() {
+	printf '0\n0\n'
+	return 0
+}
+_run_early_exit_recycle_loop() {
+	return 0
+}
+_pulse_maybe_run_llm_supervisor || fail "failed supervisor run returned non-zero from cleanup wrapper"
+[[ ! -f "${PULSE_DIR}/last_llm_success_epoch" && ! -f "${PULSE_DIR}/last_llm_run_epoch" ]] || \
+	fail "failed run advanced generic success timestamps"
+[[ ! -f "${PULSE_DIR}/last_daily_sweep_success_epoch" ]] || fail "failed run advanced daily success timestamp"
+grep -q "LLM supervisor failed" "$LOGFILE" || fail "failed run was not recorded as a failure"
+grep -q '^IDLE:' "$PIDFILE" || fail "failed run did not preserve IDLE sentinel"
 
 printf 'PASS pulse SIGPIPE and LLM state regressions\n'
