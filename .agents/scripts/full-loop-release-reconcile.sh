@@ -382,12 +382,18 @@ _full_loop_release_source_json_from_tag() {
 	local aggregate_merge=""
 	local aggregate_payload=""
 	local aggregates_json="[]"
+	local snapshot_base=""
 
 	tag_body=$(_full_loop_release_tag_body "$tag_name") || return 1
 	while IFS= read -r trailer; do
 		case "$trailer" in
 		"Aidevops-Source-PR: "*) source_pr="${trailer#Aidevops-Source-PR: }" ;;
 		"Aidevops-Source-Merge: "*) source_merge="${trailer#Aidevops-Source-Merge: }" ;;
+		"Aidevops-Snapshot-Base: "*)
+			[[ -z "$snapshot_base" ]] || return 1
+			snapshot_base="${trailer#Aidevops-Snapshot-Base: }"
+			[[ "$snapshot_base" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+			;;
 		"Aidevops-Aggregated-Source: "*)
 			aggregate_payload="${trailer#Aidevops-Aggregated-Source: }"
 			aggregate_pr="${aggregate_payload%%@*}"
@@ -402,16 +408,21 @@ _full_loop_release_source_json_from_tag() {
 		esac
 	done <<<"$tag_body"
 	[[ "$source_pr" =~ ^[0-9]+$ && "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
-	if jq -e --argjson source_pr "$source_pr" 'any(.[]; .pr == $source_pr)' <<<"$aggregates_json" >/dev/null; then
+	if [[ -z "$snapshot_base" ]] && jq -e --argjson source_pr "$source_pr" 'any(.[]; .pr == $source_pr)' <<<"$aggregates_json" >/dev/null; then
 		return 1
+	fi
+	if [[ -n "$snapshot_base" ]]; then
+		jq -e --argjson pr "$source_pr" --arg sha "$source_merge" \
+			'any(.[]; .pr == $pr and .merge == $sha)' <<<"$aggregates_json" >/dev/null || return 1
 	fi
 	if [[ "$aggregates_json" == "[]" ]]; then
 		aggregates_json=$(_full_loop_release_manifest_json_from_source_merge \
 			"$source_pr" "$source_merge") || return 1
 	fi
 	jq -cn --argjson source_pr "$source_pr" --arg source_merge "$source_merge" \
-		--argjson aggregated_sources "$aggregates_json" \
-		'{source_pr:$source_pr,source_merge:$source_merge,aggregated_sources:$aggregated_sources}'
+		--argjson aggregated_sources "$aggregates_json" --arg snapshot_base "$snapshot_base" \
+		'{source_pr:$source_pr,source_merge:$source_merge,aggregated_sources:$aggregated_sources}
+		| if $snapshot_base != "" then . + {mode:"snapshot",snapshot_base:$snapshot_base} else . end'
 	return $?
 }
 

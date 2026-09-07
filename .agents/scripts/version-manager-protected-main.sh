@@ -514,6 +514,23 @@ _version_manager_create_or_reuse_protected_pr() {
 	return 0
 }
 
+# Snapshot publication may lag main, but only for a cryptographically verified
+# tag explicitly binding the immutable range and direct release parent.
+_version_manager_is_signed_snapshot() {
+	local tag_name="$1"
+	local base=""
+	local source=""
+	base=$(git -C "$REPO_ROOT" for-each-ref --format='%(contents:body)' "refs/tags/$tag_name" |
+		awk '/^Aidevops-Snapshot-Base: / {print $2}') || return 1
+	source=$(git -C "$REPO_ROOT" for-each-ref --format='%(contents:body)' "refs/tags/$tag_name" |
+		awk '/^Aidevops-Source-Merge: / {print $2}') || return 1
+	[[ "$base" =~ ^[0-9a-f]{40}$ && "$source" =~ ^[0-9a-f]{40}$ ]] || return 1
+	[[ "$(git -C "$REPO_ROOT" rev-parse "refs/tags/${tag_name}^{commit}^1")" == "$source" ]] || return 1
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$base" "$source" || return 1
+	git -C "$REPO_ROOT" verify-tag "$tag_name" >/dev/null 2>&1
+	return $?
+}
+
 _version_manager_publish_reachable_tag() {
 	local tag_name="$1"
 	local push_output=""
@@ -538,7 +555,7 @@ _version_manager_publish_reachable_tag() {
 	fi
 	release_tree=$(git -C "$REPO_ROOT" rev-parse "${_VERSION_MANAGER_LOCAL_TAG_COMMIT}^{tree}" 2>/dev/null) || return 1
 	main_tree=$(git -C "$REPO_ROOT" rev-parse "origin/main^{tree}" 2>/dev/null) || return 1
-	if [[ "$release_tree" != "$main_tree" ]]; then
+	if [[ "$release_tree" != "$main_tree" ]] && ! _version_manager_is_signed_snapshot "$tag_name"; then
 		_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="aggregation-required"
 		print_error "Refusing to publish ${tag_name}: protected main has a different tree from the signed release commit"
 		print_info "Create a newly reviewed exact-tip aggregation release; no tag or package channel was mutated"

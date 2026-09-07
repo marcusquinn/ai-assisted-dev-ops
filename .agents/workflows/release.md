@@ -91,13 +91,13 @@ integration and repair cost, and label unavailable cost data rather than guessin
 
 ```bash
 aidevops release [patch|minor|major] <merged-pr-number> [incremental|full]
-# Multi-PR authorization (PR numbers are resolved to verified merge SHAs):
+# Optional exact manifest assertion (all snapshot PRs must be listed):
 aidevops release patch <one-authorized-pr> --expected-sources <pr>,<pr>,<pr>
 # Before the new CLI is deployed, use the same helper from a current linked worktree:
 # ./.agents/scripts/full-loop-release-helper.sh [patch|minor|major] <merged-pr-number> [incremental|full] [--expected-sources <pr>,<pr>]
 ```
 
-The helper creates the fresh detached `origin/main` worktree, invokes `version-manager.sh release --source-pr`, and persists terminal receipts only after every publication and deployment gate succeeds. A tag push durably queues the unified GitHub/npm/Homebrew workflow; the local process observes the exact run but does not wait for terminal completion. Exit `8` means remotely queued work and creates no false terminal receipt. Repeating a completed command, or running `aidevops release reconcile <source-pr>`, reconciles success without another version bump or duplicate publication. A failed or skipped release cannot create or replace success evidence.
+The helper pins the latest fetched `main` commit and baseline release identities under the publisher lane, creates a detached worktree from that SHA, and invokes `version-manager.sh release --source-pr`. Ordinary PRs may continue merging; later commits belong to the next release. Terminal receipts still require every publication and deployment gate. A tag push durably queues the unified GitHub/npm/Homebrew workflow; exit `8` means pending work, never completed publication. Status/reconciliation reuses the same snapshot rather than bumping again. Full snapshot, integrity, retry, and historical-tag contracts: `reference/release-lane-coordination.md`.
 
 Before version mutation, the helper reserves the repository's remote release lane. The lane records the active source PR, reviewed source set, phase, tag when known, and terminal receipt without command arguments or secrets. A different source receives the active lane plus exact status/reconcile commands and cannot bump a competing version. The same source resumes through `status` or `reconcile`; process exit does not release queued publication. A same-source lane that remained in the side-effect-free `reserved` phase for at least five minutes, with no tag or terminal receipt, can be recovered through compare-and-swap and a rotated fencing token. Once preparation begins, or a tag or receipt exists, recovery is reconcile-only because the original process may still publish or has crossed a publication boundary. Verified terminal receipt evidence advances the lane to inactive so the next source can reserve it atomically. API/authentication uncertainty fails closed; only a verified missing lane ref uses legacy compatibility.
 
@@ -117,21 +117,13 @@ is an integrity manifest, not a second authorization gate: it accepts a
 comma-separated set of PR numbers, and the runner resolves each to its merged
 `main` SHA, sorts the resulting `PR@SHA` manifest, and persists it before version
 mutation. The provenance resolver and
-version manager independently require exact equality with the direct or reviewed
-aggregation manifest. Missing, extra, duplicate, malformed, and SHA-mismatched
-sources fail before a bump, tag, package, or terminal receipt. Omitting the option
-retains singleton compatibility by treating the requested source PR as the
-expected set. A retry reuses the persisted manifest. When the same source owns a
-stale, side-effect-free `reserved` lane with no tag or terminal receipt, an exact
-reviewed aggregate at the current `origin/main` tip may transactionally expand a
-persisted subset authorization. The helper validates every candidate and terminal
-receipt first, rotates the fencing token, updates the authorization and lane with
-compare-and-swap semantics, restores prior snapshots after a partial failure, and
-then continues the ordinary release command. Reserved lanes written by supported
-older versions may contain PR-only intent; recovery resolves those identities
-against the reviewed aggregate and migrates them to the canonical `PR@SHA`
-manifest inside the same transaction. Other conflicting release-lane intent
-remains immutable.
+version manager independently require exact equality with the complete snapshot
+manifest. Missing, extra, duplicate, malformed, and SHA-mismatched sources fail
+before a bump, tag, package, or terminal receipt. Omitting the option discovers
+all merged PRs through the snapshot automatically. Retries reuse the pinned
+snapshot, baseline and manifest; they do not silently expand to a newer main tip.
+Historical signed tags and legacy aggregation recovery retain their original
+manifest rules, rather than being reinterpreted as snapshot releases.
 
 ```bash
 aidevops release status <merged-pr-number>     # read-only remote/channel state
@@ -149,7 +141,7 @@ allows exactly tag `v*` and branch `main`, with no reviewer or wait timer. See
 `reference/release-publication-controls.md` for the live-policy and rollback
 contract.
 
-If `main` advanced after authorization, create and review a dedicated aggregation
+For a **legacy non-snapshot release** whose `main` advanced after authorization, create and review a dedicated aggregation
 PR whose squash-merge commit contains `Aidevops-Release-Aggregator-PR` and one
 `Aidevops-Release-Aggregates: PR@MERGE_SHA` trailer per included source. Then
 rerun the original source-PR command. If recovery instead names the aggregation

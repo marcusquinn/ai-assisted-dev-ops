@@ -269,7 +269,8 @@ release_lane_acquire() {
 	2) _AIDEVOPS_RELEASE_LANE_HEAD="" ;;
 	*) return 1 ;;
 	esac
-	_release_lane_queue_preflight "$repo" || return $?
+	# The lane serializes publishers, not ordinary main merges. Snapshot
+	# provenance makes queued or concurrently merged PRs independent of it.
 	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
 	state_json=$(jq -cn --arg repo "$repo" --argjson source_pr "$source_pr" --arg expected_sources "$expected_sources" \
@@ -936,73 +937,66 @@ _release_lane_pr_is_metadata_only_aggregate() {
 	return $?
 }
 
-release_lane_merge_guard() {
+release_lane_pin_snapshot() {
 	local repo="$1"
-	local pr_number="$2"
-	local base_ref="$3"
-	local head_ref="$4"
-	local coordinated_repo="${AIDEVOPS_RELEASE_LANE_COORDINATED_REPO:-marcusquinn/aidevops}"
-	local read_rc=0
-	local active=""
-	local phase=""
-	local source_pr=""
-	local tag_name=""
+	local requested_pr="$2"
+	local snapshot="$3"
+	local base="$4"
+	local base_tag="$5"
+	local base_object="$6"
+	local state_json=""
+	[[ "$snapshot" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ && "$base_object" =~ ^[0-9a-f]{40}$ ]] || return 1
+	[[ "$base_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	release_lane_read "$repo" || return 1
+	#aidevops:trust-boundary
+	state_json=$(jq -ce --argjson requested "$requested_pr" --arg snapshot "$snapshot" \
+		--arg base "$base" --arg base_tag "$base_tag" --arg object "$base_object" \
+		--arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" \
+		--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" '
+		select(.active == true and .source_pr == $requested and .phase == $reserved
+			and .tag == null and .terminal_receipt == null and .operation_token == $token)
+		| select(.snapshot_sha == null or (.snapshot_sha == $snapshot and .snapshot_base == $base
+			and .snapshot_base_tag == $base_tag and .snapshot_base_object == $object))
+		| .snapshot_sha=$snapshot | .snapshot_base=$base | .snapshot_base_tag=$base_tag
+		| .snapshot_base_object=$object
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD"
+	return $?
+}
 
-	[[ "$repo" == "$coordinated_repo" && "$base_ref" == "main" ]] || return 0
-	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
-	release_lane_read "$repo" || read_rc=$?
-	case "$read_rc" in
-	2) return 0 ;;
-	0) ;;
-	*)
-		printf 'Cannot verify repository release lane; ordinary merge is blocked\n' >&2
-		return 75
-		;;
-	esac
-	active=$(jq -r '.active' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	phase=$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+release_lane_bind_snapshot() {
+	local repo="$1"
+	local requested_pr="$2"
+	local snapshot_json="$3"
+	local state_json=""
+	release_lane_read "$repo" || return 1
 	#aidevops:trust-boundary
-	# Ownership, not a stale receipt or phase label, releases the merge fence.
-	# Fence from reservation onwards, including preparation and reconciliation.
-	# This is an admission check, not a host-side lock: pre-existing native queues
-	# still require exact-tree publication checks and authorized aggregation recovery.
-	# See reference/release-lane-coordination.md for the bounded recovery contract.
-	if [[ "$active" == "false" ]]; then
-		return 0
-	fi
-	# Recover only proven-dead modern pre-publication ownership; never a timeout unlock.
-	if _release_lane_abandoned_reservation "$_AIDEVOPS_RELEASE_LANE_JSON"; then
-		source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-		release_lane_recover_reservation "$repo" "$source_pr" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return 75
-		return 0
-	fi
-	case "$phase" in
-	reserved | preparing | reconcile-required | remote-publication | exact-tag-deployment | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" | "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING") ;;
-	*)
-		printf 'Cannot authorize merge for active release lane phase=%s\n' "$phase" >&2
-		return 75
-		;;
-	esac
-	source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	tag_name=$(jq -r '.tag // ""' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	[[ "$pr_number" == "$source_pr" ]] && return 0
-	#aidevops:trust-boundary
-	if [[ -n "$tag_name" && "$head_ref" == "chore/release-${tag_name}-provenance" ]]; then
-		case "$phase" in
-		"$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH") ;;
-		*) return 0 ;;
-		esac
-	fi
-	if [[ "$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" &&
-		"$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" &&
-		"$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" ]] &&
-		_release_lane_pr_is_metadata_only_aggregate "$repo" "$pr_number"; then
-		return 0
-	fi
-	printf 'ACTIVE_RELEASE_LANE_MERGE_BLOCKED source_pr=%s phase=%s tag=%s\n' \
-		"$source_pr" "$phase" "${tag_name:-pending}" >&2
-	release_lane_liveness_report "$_AIDEVOPS_RELEASE_LANE_JSON" >&2
-	return 75
+	state_json=$(jq -ce --argjson requested "$requested_pr" --argjson snapshot "$snapshot_json" \
+		--arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" --arg sha_pattern '^[0-9a-f]{40}$' \
+		--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" '
+		select(.active == true and .source_pr == $requested and .phase == $reserved
+			and .tag == null and .terminal_receipt == null and .operation_token == $token)
+		| ($snapshot.expected_sources | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")) as $sources
+		| select($snapshot.mode == "snapshot"
+			and ($snapshot.source_merge | test($sha_pattern))
+			and ($snapshot.snapshot_base | test($sha_pattern))
+			and any($snapshot.expected_sources[]; .pr == $requested))
+		| select(.snapshot_sha == null or
+			(.snapshot_sha == $snapshot.source_merge and .snapshot_base == $snapshot.snapshot_base
+			and (.snapshot_manifest_bound != true or .expected_sources == $sources)))
+		| .snapshot_sha=$snapshot.source_merge | .snapshot_base=$snapshot.snapshot_base
+		| .expected_sources=$sources | .snapshot_manifest_bound=true
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD"
+	return $?
+}
+
+release_lane_merge_guard() {
+	# Compatibility entry point: review, trust and exact-head CI gates remain
+	# the merge callers' responsibility. Release ownership grants no PR approval
+	# and an unavailable publication lane must not freeze unrelated development.
+	[[ "${2:-}" =~ ^[0-9]+$ ]] || return 1
+	return 0
 }
 
 release_lane_setup_guard() {

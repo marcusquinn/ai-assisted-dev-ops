@@ -3,43 +3,55 @@
 
 # Release-lane merge coordination
 
-## Proven defect and ownership
+## Publisher isolation, not a merge freeze
 
-GH#31377 independently reproduced ordinary TODO merge admission during an active
-`reserved`, `preparing`, or `reconcile-required` lane. The shared
-`release_lane_merge_guard` in `scripts/release-lane-helper.sh` owns the correction;
-Full-loop and Pulse already consume it. The historical initiating caller of
-PR #31362 remains unknown. Fixture evidence is not historical attribution.
+GH#31472 replaces the exact-tip merge fence introduced by GH#31377 with
+immutable snapshot releases. Ordinary PRs may merge in every release phase,
+including failed or unavailable publication state. Their existing collaborator,
+review and exact-head CI checks remain mandatory. Merge queues are not a
+dependency of publisher reservation.
 
-Active ownership now fences ordinary main merges from reservation until the
-lane is explicitly inactive. An unknown active phase or inconsistent terminal
-label fails closed. Source, provenance, and metadata-only aggregation exceptions
-retain their existing phase restrictions and downstream authorization checks.
-Other repositories and non-main bases are not fenced by this guard.
+The remote lane still serializes **release publishers**. Competing sources
+cannot reserve another version, overwrite the active transaction, replace a tag,
+or bypass publication authorization. Source ownership and compare-and-swap
+fencing remain independent of main branch activity.
 
-## Previously admitted work and remaining race
+## Snapshot contract
 
-Before creating a new reservation, `_release_lane_queue_preflight` enumerates
-open main PRs using GitHub's `autoMergeRequest` and `mergeQueueEntry` fields with
-pagination. Queued work, partial enumeration, missing fields, or API uncertainty
-returns 75 **before reservation writes**. The helper does not cancel or mutate
-queued work. Existing owners can still adopt/resume their lane during an API
-outage; competing sources cannot displace them.
+1. After publisher reservation, fetch main and select its commit SHA. Pin that
+   SHA and the baseline release tag name, tag-object SHA and peeled commit using
+   the lane's ownership token before worktree creation or source discovery.
+2. Build the detached worktree from the pinned SHA, not a subsequently refreshed
+   `origin/main`. Reclaimed reserved retries reuse the same pin and baseline.
+3. Verify the baseline tag through GitHub's signed-tag identity and derive the
+   merged-PR manifest over the immutable baseline-to-snapshot range. For each
+   first-parent commit, verify GitHub's introducing-PR association and its merged
+   tip within the range. Rebase-merged commits deduplicate to one verified PR.
+   Unknown, unmerged, foreign-base, conflicting, or incomplete records stop
+   publication rather than silently omitting changes.
+4. Include all those merged PRs automatically after explicit release consent.
+   An explicit `--expected-sources` remains an exact integrity assertion, not an
+   allowlist that silently drops other merged changes.
+5. The signed bump tag binds the source SHA, full manifest, and
+   `Aidevops-Snapshot-Base`. Its release commit stays a direct child of the
+   snapshot. A protected-main integration PR preserves that commit and normal
+   merge gates; it never rebases or retags the published artifact.
+6. A cryptographically verified snapshot tag may publish after main gains a
+   different descendant tree. The tag must still be reachable from main, and
+   package publication repeats provenance verification. Deployment uses the exact
+   tag, not the current main tree. Later PR merges are included in the next release.
 
-This is not an atomic GitHub lock. A queue entry admitted after the snapshot,
-an already-running merge, direct REST/GraphQL writes, an unwrapped CLI, or a
-manual host action can still advance main. Neither this guard nor the PATH shim
-can revoke those actions. Do not claim that an enqueue-time check proves main
-will remain stable. Do not install a blanket repository freeze or weaken branch
-protection to compensate.
+The baseline can be a signed bump commit preserved as a merge's second parent.
+The range excludes all commits already reachable from that baseline; it does
+not require the tag itself to be on main's first-parent chain.
 
 ## Bounded recovery owner
 
-The existing release reconciliation and authorized aggregation helpers remain
-the recovery owner, not the TODO producer or an ordinary implementation worker.
-Keep exact-tree/provenance checks ahead of tag/package publication. A mismatch
-must stop publication, retain the lane, and require reviewed immutable source
-evidence; queued work is not itself publication authorization.
+Existing release reconciliation remains the recovery owner. Historical tags
+without snapshot provenance retain their original direct/aggregation semantics
+and exact-tree protected-publication check. Never reinterpret or rewrite them
+as snapshot releases. A failed legacy lane may still require its authorized
+owner to complete recovery, but it no longer freezes ordinary PR merges.
 
 For a stale, open, reviewed aggregation, the existing
 `aidevops release refresh-aggregate STALE_AGGREGATION_PR` operation performs one
@@ -55,8 +67,8 @@ bounded successor transaction in `scripts/full-loop-release-aggregate-recovery.s
 The already-authorized release owner uses `recover-aggregate` only with validated
 source evidence and its existing publication authority. An implementation brief
 does not grant that authority. Never mutate an already published immutable tag
-to repair drift. A terminal receipt releases ordinary work through the existing
-lane finalization contract.
+to repair drift. A terminal receipt releases the publisher lane through the
+existing finalization contract.
 
 ## Executor liveness and abandoned reservations (GH#31464)
 
@@ -98,6 +110,7 @@ does not gain automatic-recovery eligibility merely by acquiring new metadata.
 Run from the repository root:
 
 ```bash
+bash .agents/scripts/tests/test-release-snapshot-helper.sh
 bash .agents/scripts/tests/test-release-lane-reservation.sh
 bash .agents/scripts/tests/test-release-lane.sh
 python3 .agents/scripts/tests/test-release-lane-owner.py
@@ -107,8 +120,10 @@ bash .agents/scripts/tests/test-full-loop-release-reconcile.sh
 shellcheck .agents/scripts/release-lane-helper.sh .agents/scripts/tests/test-release-lane-reservation.sh
 ```
 
-Reservation fixtures exercise both queue mechanisms, later pages, partial/API
-failure, competing actors, same-source resume, and terminal recovery. Existing
+Snapshot fixtures exercise frozen range discovery, rebase associations, signed
+publication after main changes, idempotent pins and stale-owner rejection.
+Reservation fixtures exercise queue independence, competing actors, same-source
+resume, and terminal recovery. Existing
 lane/aggregation fixtures cover permitted provenance and metadata-only recovery,
 CAS ownership, exact-tip/source-manifest rejection, and successor convergence.
 No live release or package writes are needed to verify these contracts.

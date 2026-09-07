@@ -328,6 +328,10 @@ _release_tag_message() {
 	if [[ -n "$source_pr" && -n "$source_merge" ]]; then
 		printf 'Aidevops-Source-PR: %s\n' "$source_pr"
 		printf 'Aidevops-Source-Merge: %s\n' "$source_merge"
+		if [[ -n "${VERSION_MANAGER_SNAPSHOT_BASE:-}" ]]; then
+			[[ "$VERSION_MANAGER_SNAPSHOT_BASE" =~ ^[0-9a-f]{40}$ ]] || return 1
+			printf 'Aidevops-Snapshot-Base: %s\n' "$VERSION_MANAGER_SNAPSHOT_BASE"
+		fi
 		while IFS= read -r aggregated_source; do
 			[[ -n "$aggregated_source" ]] || continue
 			printf 'Aidevops-Aggregated-Source: %s\n' "$aggregated_source"

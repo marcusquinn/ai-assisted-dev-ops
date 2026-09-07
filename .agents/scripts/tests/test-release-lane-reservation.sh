@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 Marcus Quinn
-# GH#31377: a reservation must fence ordinary merges before publication starts.
+# Snapshot publication serializes publishers, not ordinary merges or queues.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,25 +37,25 @@ expect_guard 'admission before reservation' 0 test/repo 202 main aidevops/issue-
 for phase in reserved preparing reconcile-required remote-publication exact-tag-deployment future-phase; do
 	state=$(jq -cn --arg phase "$phase" \
 		'{active:true,source_pr:101,phase:$phase,tag:null,terminal_receipt:null}')
-	expect_guard "ordinary TODO deferred in $phase" 75 test/repo 202 main aidevops/issue-sync-todo
+	expect_guard "ordinary TODO admitted in $phase" 0 test/repo 202 main aidevops/issue-sync-todo
 	expect_guard "other repository unaffected in $phase" 0 other/repo 202 main feature/work
 	expect_guard "other base unaffected in $phase" 0 test/repo 202 develop feature/work
 done
 
-# A stale phase/receipt must not reopen an active lane to concurrent actors.
+# Stale release state does not grant publication, but cannot freeze merges.
 state='{"active":true,"source_pr":101,"phase":"terminal","terminal_receipt":null}'
-expect_guard 'inconsistent terminal phase stays closed' 75 test/repo 202 main feature/work
+expect_guard 'inconsistent publisher phase leaves merge policy independent' 0 test/repo 202 main feature/work
 state='{"active":true,"source_pr":101,"phase":"reserved","terminal_receipt":"published"}'
-expect_guard 'stale receipt cannot override active ownership' 75 test/repo 202 main feature/work
+expect_guard 'stale receipt does not freeze merges' 0 test/repo 202 main feature/work
 state='{"active":false,"source_pr":101,"phase":"terminal","terminal_receipt":"published"}'
 expect_guard 'ordinary work resumes after terminal receipt' 0 test/repo 202 main aidevops/issue-sync-todo
 
 release_lane_read() { return 1; }
-expect_guard 'API uncertainty defers merge' 75 test/repo 202 main feature/work
+expect_guard 'publisher API uncertainty does not defer merge' 0 test/repo 202 main feature/work
 release_lane_read() { return 2; }
 expect_guard 'absent lane retains legacy behavior' 0 test/repo 202 main feature/work
 
-# Production acquisition must not reserve while host work is already admitted.
+# Publisher reservation is independent of host merge admission and queue APIs.
 empty_pages='[{"data":{"repository":{"pullRequests":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}]'
 queue_response="$empty_pages"
 api_rc=0
@@ -94,20 +94,20 @@ expect_acquire 'two clean pages with unqueued PRs allow reservation' 0 1
 for field in autoMergeRequest mergeQueueEntry; do
 	queue_response=$(jq --arg field "$field" \
 		'.[0].data.repository.pullRequests.nodes=[{number:202,autoMergeRequest:null,mergeQueueEntry:null} | .[$field]={id:"queued"}]' <<<"$empty_pages")
-	expect_acquire "pre-existing $field prevents reservation writes" 75 0
+	expect_acquire "pre-existing $field permits publisher reservation" 0 1
 done
 queue_response=$(jq --argjson queued "$queue_response" \
 	'.[0].data.repository.pullRequests.pageInfo={hasNextPage:true,endCursor:"page-one"} | . + $queued' <<<"$empty_pages")
-expect_acquire 'queued entry on second page prevents reservation' 75 0
+expect_acquire 'queued entry on second page permits reservation' 0 1
 queue_response=$(jq '.[0].data.repository.pullRequests.pageInfo.hasNextPage=true' <<<"$empty_pages")
-expect_acquire 'incomplete pagination prevents reservation' 75 0
+expect_acquire 'queue pagination is not a publisher dependency' 0 1
 queue_response='[{"errors":[{"message":"unavailable"}],"data":{"repository":null}}]'
-expect_acquire 'GraphQL uncertainty prevents reservation' 75 0
+expect_acquire 'queue GraphQL uncertainty is not a publisher dependency' 0 1
 queue_response=$(jq '.[0].data.repository.pullRequests.nodes=[{number:202}]' <<<"$empty_pages")
-expect_acquire 'missing queue fields fail closed' 75 0
+expect_acquire 'queue fields are not a publisher dependency' 0 1
 queue_response="$empty_pages"
 api_rc=1
-expect_acquire 'transport failure prevents reservation' 75 0
+expect_acquire 'queue transport is not a publisher dependency' 0 1
 
 # Queue API failure must not displace or strand an existing release owner.
 state='{"active":true,"source_pr":101,"phase":"remote-publication","tag":"v1.2.3","operation_token":"fixture-owner"}'

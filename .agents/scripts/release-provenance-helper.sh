@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 source "${SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=release-authorization-manifest-helper.sh
 source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
+# shellcheck source=release-snapshot-helper.sh
+source "${SCRIPT_DIR}/release-snapshot-helper.sh"
 _RELEASE_PROVENANCE_TAG_REF_PREFIX="refs/tags/"
 _RELEASE_PROVENANCE_SCOPE_REMOTE="remote"
 _RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE="local-source"
@@ -168,6 +170,48 @@ _release_provenance_assert_expected_sources() {
 	return 0
 }
 
+_release_provenance_resolve_snapshot() {
+	local requested_pr="$1"
+	local repo="$2"
+	local branch="$3"
+	local expected_raw="$4"
+	local snapshot=""
+	local base_tag=""
+	local base=""
+	local sources=""
+	local expected=""
+	local source_pr=""
+	local base_object=""
+	snapshot=$(git rev-parse HEAD) || return 1
+	git merge-base --is-ancestor "$snapshot" "origin/$branch" || return 1
+	if [[ -n "${AIDEVOPS_RELEASE_SNAPSHOT_SHA:-}" ]]; then
+		[[ "$snapshot" == "$AIDEVOPS_RELEASE_SNAPSHOT_SHA" ]] || return 1
+		base_tag="${AIDEVOPS_RELEASE_SNAPSHOT_BASE_TAG:-}"
+	else
+		base_tag=$(git describe --tags --match 'v[0-9]*' --abbrev=0 "$snapshot") || return 1
+	fi
+	[[ "$base_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	base=$(git rev-parse "refs/tags/${base_tag}^{commit}") || return 1
+	base_object=$(git rev-parse "refs/tags/${base_tag}") || return 1
+	if [[ -n "${AIDEVOPS_RELEASE_SNAPSHOT_SHA:-}" ]]; then
+		[[ "$base" == "${AIDEVOPS_RELEASE_SNAPSHOT_BASE:-}" &&
+			"$base_object" == "${AIDEVOPS_RELEASE_SNAPSHOT_BASE_OBJECT:-}" ]] || return 1
+	fi
+	_release_provenance_verify_github_tag "$repo" "$base_tag" "$base" "$base_object" || return 1
+	sources=$(release_snapshot_sources "$repo" "$branch" "$base" "$snapshot") || return 1
+	jq -e --argjson pr "$requested_pr" 'any(.[]; .pr == $pr)' <<<"$sources" >/dev/null || return 1
+	source_pr=$(jq -er --arg sha "$snapshot" '.[] | select(.merge == $sha) | .pr' <<<"$sources") || return 1
+	if [[ -n "$expected_raw" ]]; then
+		expected=$(_release_provenance_expected_sources "$requested_pr" "$expected_raw" "$repo" "$branch" "$snapshot") || return 1
+		_release_provenance_assert_expected_sources "$expected" "$sources" || return 1
+	fi
+	jq -cn --argjson requested "$requested_pr" --argjson source "$source_pr" \
+		--arg sha "$snapshot" --arg base "$base" --argjson sources "$sources" \
+		'{mode:"snapshot",requested_pr:$requested,source_pr:$source,source_merge:$sha,
+		snapshot_base:$base,aggregated_sources:$sources,expected_sources:$sources}'
+	return $?
+}
+
 _release_provenance_resolve_authorization() {
 	local requested_pr="$1"
 	local raw_sources="$2"
@@ -182,6 +226,21 @@ _release_provenance_resolve_authorization() {
 	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$raw_sources" \
 		"$repo_slug" "$branch_name" "$release_head") || return 1
 	jq -cn --argjson expected "$expected_sources_json" '{expected_sources:$expected}'
+	return $?
+}
+
+_release_provenance_tag_expected_sources() {
+	local requested_pr="$1"
+	local raw_sources="$2"
+	if [[ -n "${_RELEASE_PROVENANCE_SNAPSHOT_BASE:-}" ]]; then
+		jq -e --argjson pr "$requested_pr" 'any(.[]; .pr == $pr)' \
+			<<<"$_RELEASE_PROVENANCE_AGGREGATED_SOURCES" >/dev/null || return 1
+		if [[ -z "$raw_sources" ]]; then
+			jq -c 'sort_by(.pr)' <<<"$_RELEASE_PROVENANCE_AGGREGATED_SOURCES"
+			return $?
+		fi
+	fi
+	_release_provenance_expected_sources "$@"
 	return $?
 }
 
@@ -203,13 +262,14 @@ _release_provenance_resolve_tag_authorization() {
 	[[ "$release_head" == "$tag_commit" ]] || return 1
 	_release_provenance_verify "$tag_name" "$repo_slug" "$branch_name" \
 		"$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" >/dev/null || return 1
-	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$raw_sources" \
+	expected_sources_json=$(_release_provenance_tag_expected_sources "$requested_pr" "$raw_sources" \
 		"$repo_slug" "$branch_name" "$tag_commit") || return 1
 	source_json=$(jq -cn --argjson requested_pr "$requested_pr" \
 		--argjson source_pr "$_RELEASE_PROVENANCE_SOURCE_PR" \
 		--arg source_merge "$_RELEASE_PROVENANCE_SOURCE_MERGE" \
-		--argjson aggregated "$_RELEASE_PROVENANCE_AGGREGATED_SOURCES" '
-		{mode:(if ($aggregated | length) == 0 then "direct" else "aggregate" end),
+		--argjson aggregated "$_RELEASE_PROVENANCE_AGGREGATED_SOURCES" \
+		--arg snapshot_base "${_RELEASE_PROVENANCE_SNAPSHOT_BASE:-}" '
+		{mode:(if $snapshot_base != "" then "snapshot" elif ($aggregated | length) == 0 then "direct" else "aggregate" end),
 		 requested_pr:$requested_pr,source_pr:$source_pr,source_merge:$source_merge,
 		 aggregated_sources:($aggregated | sort_by(.pr))}
 	') || return 1
@@ -237,7 +297,7 @@ _release_provenance_resolve_tag_expected_sources() {
 	[[ "$release_head" == "$tag_commit" ]] || return 1
 	_release_provenance_verify "$tag_name" "$repo_slug" "$branch_name" \
 		"$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" >/dev/null || return 1
-	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$raw_sources" \
+	expected_sources_json=$(_release_provenance_tag_expected_sources "$requested_pr" "$raw_sources" \
 		"$repo_slug" "$branch_name" "$tag_commit") || return 1
 	jq -cn --argjson expected "$expected_sources_json" '{expected_sources:$expected}'
 	return $?
@@ -508,6 +568,10 @@ _release_provenance_load_trailers() {
 	local aggregate_pr=""
 	local aggregate_merge=""
 
+	_RELEASE_PROVENANCE_SNAPSHOT_BASE=$(_release_provenance_trailer_values "$tag_name" "Aidevops-Snapshot-Base") || return 1
+	if [[ -n "$_RELEASE_PROVENANCE_SNAPSHOT_BASE" ]]; then
+		[[ "$_RELEASE_PROVENANCE_SNAPSHOT_BASE" =~ ^[0-9a-f]{40}$ ]] || return 1
+	fi
 	recorded_version=$(_release_provenance_trailer "$tag_name" "Aidevops-Version") || {
 		_release_provenance_error "tag lacks Aidevops-Version provenance"
 		return 1
@@ -563,7 +627,18 @@ _release_provenance_verify_aggregate_manifest() {
 	local entry=""
 	local entry_pr=""
 	local entry_merge=""
+	local snapshot_base_tag=""
 
+	if [[ -n "${_RELEASE_PROVENANCE_SNAPSHOT_BASE:-}" ]]; then
+		snapshot_base_tag=$(git describe --tags --exact-match --match 'v[0-9]*' "$_RELEASE_PROVENANCE_SNAPSHOT_BASE") || return 1
+		[[ "$snapshot_base_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+		_release_provenance_verify_github_tag "$repo_slug" "$snapshot_base_tag" "$_RELEASE_PROVENANCE_SNAPSHOT_BASE" \
+			"$(git rev-parse "refs/tags/${snapshot_base_tag}")" || return 1
+		manifest_json=$(release_snapshot_sources "$repo_slug" "$branch_name" \
+			"$_RELEASE_PROVENANCE_SNAPSHOT_BASE" "$source_merge") || return 1
+		_release_provenance_assert_expected_sources "$manifest_json" "$_RELEASE_PROVENANCE_AGGREGATED_SOURCES"
+		return $?
+	fi
 	manifest_pr=$(_release_provenance_trailer_values_at_commit "$source_merge" "Aidevops-Release-Aggregator-PR") || return 1
 	manifest_entries=$(_release_provenance_trailer_values_at_commit "$source_merge" "Aidevops-Release-Aggregates") || return 1
 	if [[ -z "$manifest_pr" && -z "$manifest_entries" && "$_RELEASE_PROVENANCE_AGGREGATED_SOURCES" == '[]' ]]; then
@@ -663,6 +738,7 @@ main() {
 	local branch_name="main"
 	local source_pr=""
 	local expected_sources=""
+	local snapshot_mode=false
 
 	case "$command" in
 	verify | verify-local-source | resolve-authorization | resolve-tag-authorization | resolve-tag-expected-sources | resolve-source) ;;
@@ -680,6 +756,9 @@ main() {
 		local option="$1"
 		shift
 		case "$option" in
+		--snapshot)
+			snapshot_mode=true
+			;;
 		--tag)
 			tag_name="${1:-}"
 			shift || true
@@ -705,6 +784,12 @@ main() {
 	done
 
 	[[ -n "$repo_slug" && -n "$branch_name" ]] || return 1
+	if [[ "$snapshot_mode" == true ]]; then
+		[[ "$command" == "resolve-source" || "$command" == "resolve-authorization" ]] || return 1
+		[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
+		_release_provenance_resolve_snapshot "$source_pr" "$repo_slug" "$branch_name" "$expected_sources"
+		return $?
+	fi
 	if [[ "$command" == "resolve-authorization" ]]; then
 		[[ -n "$source_pr" ]] || return 1
 		_release_provenance_resolve_authorization "$source_pr" "$expected_sources" "$repo_slug" "$branch_name"
