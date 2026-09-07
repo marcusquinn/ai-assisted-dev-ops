@@ -826,7 +826,7 @@ _cleanup_single_worktree() {
 	"$_PC_ARCHIVE_REQUIRED_FAILURE_RC" | "$_PC_ARCHIVE_HANDLED_SKIP_RC") return 1 ;;
 	esac
 
-	local audit_context reason
+	local audit_context="" reason=""
 	local guard_ok
 	guard_ok=$(printf 'cle%s' 'ar')
 	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "$guard_ok" "$_PC_REMOVAL_NONE")
