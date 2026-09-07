@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import py_compile
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -138,6 +140,52 @@ class SourceAccessHelperTests(unittest.TestCase):
                 with self.subTest(command=command), self.assertRaises(HELPER.SourceAccessError):
                     core._run(command)
             run.assert_not_called()
+
+    def _proposal_cli(self, arguments: list[str], now: int) -> str:
+        output = io.StringIO()
+        with (mock.patch.object(HELPER, "Config", return_value=self.config),
+              mock.patch.object(HELPER, "real_user", return_value=(self.uid, self.home)),
+              mock.patch.object(HELPER.time, "time", return_value=now), redirect_stdout(output)):
+            self.assertEqual(HELPER.main(arguments), 0)
+        return output.getvalue().strip()
+
+    def test_proposal_cli_reuses_delayed_metadata_without_issuing_authority(self) -> None:
+        spec = self._proposal_spec()
+        arguments = ["propose", "--session", spec.session_id, "--reason", spec.reason,
+                     "--issue-snapshot-sha256", "a" * 64, "--context-socket", "/fixture/socket"]
+        for path in spec.paths:
+            arguments.extend(["--path", path])
+        core = HELPER._SOURCE_CORE
+        # Command routing fixture only; the Node suite covers real native context IPC.
+        with (mock.patch.object(core, "query_source_context", return_value={"fixture": "context"}) as query,
+              mock.patch.object(HELPER, "_sign_payload") as sign):
+            identifier = self._proposal_cli(arguments, self.now)
+            for days in (1, 7):
+                self.assertEqual(identifier, self._proposal_cli(arguments, self.now + days * 86400))
+            body = core.load_source_proposal(self.config, self.home, identifier, self.uid)
+            self.assertEqual(body["created_at"], self.now)
+            query.assert_called_with("/fixture/socket", self.session, str(Path(spec.paths[0]).parent), self.uid)
+            self.assertIn("existing grants were not revoked", self._proposal_cli(
+                ["withdraw-proposal", identifier], self.now + 7 * 86400))
+            with self.assertRaises(HELPER.SourceAccessError):
+                core.load_source_proposal(self.config, self.home, identifier, self.uid)
+            self.assertNotEqual(identifier, self._proposal_cli(arguments, self.now + 7 * 86400))
+            sign.assert_not_called()
+        self.assertFalse(self.config.state_dir.exists())
+
+    def test_proposal_cli_requires_context_and_rejects_privileged_preparation(self) -> None:
+        args = HELPER.build_parser().parse_args([
+            "propose", "--session", self.session, "--path", str(self.source),
+            "--reason", HELPER.OVERRIDABLE_REASON, "--issue-snapshot-sha256", "a" * 64,
+            "--context-socket", "",
+        ])
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "live runtime context"):
+            HELPER._run_propose(args, self.config, self.uid, self.home)
+        args.context_socket = "/fixture/socket"
+        with (mock.patch.object(os, "geteuid", return_value=0),
+              self.assertRaisesRegex(HELPER.SourceAccessError, "non-root")):
+            HELPER._run_propose(args, self.config, self.uid, self.home)
+        self.assertFalse(self.config.state_dir.exists())
 
     def test_v3_status_and_revoke_preserve_other_grants(self) -> None:
         approval_id = "a" * 64

@@ -566,12 +566,16 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
         tempDir: runtimeRoot, client: { session: { get: async () => ({ data: session }) } } });
       const env = await runtime.environment(sessionId);
       const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
-      const script = 'import runpy,sys,json,os; from pathlib import Path; '
-        + 'c=runpy.run_path(sys.argv[1])["_SOURCE_CORE"]; '
+      const script = 'import runpy,sys,json,os,io; from pathlib import Path; '
+        + 'from contextlib import redirect_stdout; from unittest.mock import patch; '
+        + 'h=runpy.run_path(sys.argv[1]); c=h["_SOURCE_CORE"]; '
         + 'cfg=c.Config(request_root=Path(sys.argv[2])); '
-        + 's=c.ManifestRequestSpec(sys.argv[3],os.getuid(),Path.home(),tuple(json.loads(sys.argv[4])),c.OVERRIDABLE_REASON,1800000000); '
-        + 'i=c.create_source_proposal(cfg,s,issue_snapshot_sha256="a"*64,context_socket=sys.argv[5]); '
-        + 'b=c.load_source_proposal(cfg,s.home,i,s.uid); c.revalidate_source_proposal_context(b,s.uid); '
+        + 'a=h["build_parser"]().parse_args(["propose","--session",sys.argv[3],"--reason",c.OVERRIDABLE_REASON,'
+        + '"--issue-snapshot-sha256","a"*64,"--context-socket",sys.argv[5]]'
+        + '+[arg for path in json.loads(sys.argv[4]) for arg in ("--path",path)]); out=io.StringIO()\n'
+        + 'with redirect_stdout(out),patch("time.time",return_value=1800000000): h["_run_propose"](a,cfg,os.getuid(),Path.home())\n'
+        + 'i=out.getvalue().strip(); b=c.load_source_proposal(cfg,Path.home(),i,os.getuid()); '
+        + 'c.revalidate_source_proposal_context(b,os.getuid()); '
         + 'print(json.dumps({"id":i,"body":b}))';
       const result = await promisify(execFile)("python3", ["-I", "-B", "-c", script, helper,
         join(root, "requests"), sessionId, JSON.stringify(paths), env.AIDEVOPS_SOURCE_CONTEXT_SOCKET], { timeout: 15000 });

@@ -718,6 +718,7 @@ def _confirm_request(request: dict[str, Any]) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="aidevops source-access")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_proposal_commands(subparsers)
     subparsers.add_parser("setup")
     request = subparsers.add_parser("request")
     request.add_argument("--session", required=True)
@@ -737,6 +738,34 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status")
     subparsers.add_parser("trust-check")
     return parser
+
+
+def _add_proposal_commands(subparsers: Any) -> None:
+    proposal = subparsers.add_parser("propose", help="prepare powerless runtime-bound proposal metadata")
+    proposal.add_argument("--session", required=True)
+    proposal.add_argument("--path", required=True, action="append")
+    proposal.add_argument("--reason", required=True)
+    proposal.add_argument("--issue-snapshot-sha256", required=True)
+    proposal.add_argument("--context-socket", default=os.environ.get("AIDEVOPS_SOURCE_CONTEXT_SOCKET", ""))
+    withdrawal = subparsers.add_parser("withdraw-proposal", help="remove pending metadata; does not revoke grants")
+    withdrawal.add_argument("proposal_id")
+
+
+def _run_propose(args: argparse.Namespace, config: Config, uid: int, home: Path) -> int:
+    if not args.context_socket:
+        raise SourceAccessError("proposal preparation requires a live runtime context socket")
+    proposal_id = _SOURCE_CORE.create_source_proposal(
+        config, ManifestRequestSpec(args.session, uid, home, tuple(args.path), args.reason),
+        issue_snapshot_sha256=args.issue_snapshot_sha256, context_socket=args.context_socket,
+    )
+    print(proposal_id)
+    return 0
+
+
+def _run_withdraw_proposal(args: argparse.Namespace, config: Config, uid: int, home: Path) -> int:
+    _SOURCE_CORE.withdraw_source_proposal(config, home, args.proposal_id, uid)
+    print(f"Withdrawn pending proposal: {args.proposal_id}; existing grants were not revoked.")
+    return 0
 
 
 def _run_setup(_args: argparse.Namespace, config: Config, _uid: int, _home: Path) -> int:
@@ -823,6 +852,8 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "setup": _run_setup,
         "request": _run_request,
+        "propose": _run_propose,
+        "withdraw-proposal": _run_withdraw_proposal,
         "approve": _run_approve,
         "verify": _run_verify,
         "revoke": _run_revoke,
