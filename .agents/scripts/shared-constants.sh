@@ -308,7 +308,7 @@ aidevops_gh_slurp_status_message() {
 			"$AIDEVOPS_GH_MIN_SLURP_VERSION" "$(aidevops_gh_slurp_remediation_guidance)"
 		return 0
 	fi
-	installed=$(aidevops_gh_installed_version) || installed="unknown"
+	installed=$(aidevops_gh_installed_version) || installed='unknown'
 	if [[ "$installed" == "unknown" ]]; then
 		printf 'GitHub CLI (gh) version could not be parsed; gh api --paginate --slurp requires gh >= %s; gh --version output is malformed or empty. %s' \
 			"$AIDEVOPS_GH_MIN_SLURP_VERSION" "$(aidevops_gh_slurp_remediation_guidance "$installed")"
@@ -1285,33 +1285,11 @@ _source_shared_module_with_retry "${_SC_SELF%/*}/shared-gh-wrappers.sh"
 
 
 #######################################
-# Clear active-lifecycle status labels on dispatch claim release (t2420).
+# Project an authoritative lifecycle label on dispatch claim release (t2420).
 #
-# Removes only the four ACTIVE status labels (queued, claimed, in-progress,
-# in-review) and optionally the worker's assignment. PRESERVES terminal
-# states (done, blocked) and the eligible state (available) — those are set
-# by authoritative paths (PR merge, blocker triage, explicit re-queue) and
-# must survive a worker's claim release.
-#
-# Why not set_issue_status "" ? Because it would strip status:done set by
-# the PR merge path if the CLAIM_RELEASED comment races ahead — a worker
-# that succeeds, creates a PR, the PR merges (setting status:done), and
-# then the worker's EXIT trap fires CLAIM_RELEASED would regress the state.
-# This helper is the targeted, race-safe alternative.
-#
-# Why not just skip label cleanup entirely? Because without it, orphan
-# labels pin an issue as "active" even though no worker holds the claim,
-# blocking pulse re-dispatch via the t1996 combined-signal guard
-# (active-status + assignee = block). Observed in production: #19864 and
-# #19738 were both pinned status:queued/claimed for 40+ minutes after
-# worker completion, with dead PIDs (one case was PID 11742 reused by
-# Brave Browser — see t2421).
-#
-# Origin labels are provenance only. An interactive session may create an
-# auto-dispatch issue that a headless worker validly claims, so release must
-# not skip cleanup solely because origin:interactive is present (GH#29897).
-# The exact worker_login removal and linked-PR safeguards below preserve live
-# interactive ownership and completed-work audit state.
+# The current exact linked-PR state selects the projection: no linked PR is
+# available, an open draft is blocked, an open non-draft PR is in-review, and
+# a merged PR is done. Unreadable or ambiguous PR metadata is a no-write error.
 #
 # Args:
 #   $1 — issue number
@@ -1334,88 +1312,44 @@ clear_active_status_on_release() {
 		return 0
 	fi
 
-	local labels_json=""
-	labels_json=$(gh issue view "$issue_num" --repo "$repo_slug" \
-		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || labels_json=""
-
-	# Defensive: if a linked PR exists for this issue (OPEN or MERGED),
-	# preserve the worker's assignee and status:in-review.
-	#
-	# OPEN linked PR: the PR pipeline owns final cleanup on merge (see
-	# pulse-merge.sh::_release_interactive_claim_on_merge for the
-	# interactive mirror). Stripping here strands the PR in
-	# maintainer-gate Job 1 Check 2 because the assignee check fires
-	# after CLAIM_RELEASED but before PR merge. GH#20195/t2451 closed
-	# that trust-gate loop.
-	#
-	# MERGED linked PR: preserves the closing-time audit trail on the
-	# issues list — the assignee identifies which runner's worker
-	# completed the work once the issue auto-closes. Without this, a
-	# fast merge (CI green before the worker exit trap fires — observed
-	# as little as 16s) races the unassign and erases the audit trail.
-	# t2746/GH#20520.
-	#
-	# We still remove queued, claimed, and in-progress — those never
-	# outlive the worker process regardless of PR state. When no linked PR
-	# exists, add status:available in the same edit so failed workers do not
-	# leave issues pinned as assigned-but-queued until the next stale sweep.
-	#
-	# CLOSED-not-merged PRs do NOT trigger preserve: the work didn't
-	# complete, and leaving the assignee on the issue would block
-	# future dispatch via the combined-signal dedup rule (t1996).
-	#
-	# Closing-keyword regex matches pulse-merge.sh::_extract_linked_issue
-	# character-for-character (case-insensitive) so behaviour is consistent
-	# across the merge path and the release path. Do NOT widen this to
-	# `Ref` or `For` — those are planning references that MUST NOT block
-	# assignee cleanup (see t2046).
-	local has_linked_pr=false
-	local has_open_linked_pr=0
-	local linked_open_pr_numbers=""
-	local linked_prs_json=""
+	# The release event alone does not identify a review-ready PR. Read the
+	# current linked PR state before writing: drafts project as blocked partial
+	# work, while only non-draft OPEN PRs project as in-review. A failed or
+	# ambiguous read preserves the prior projection rather than guessing.
+	local linked_prs_json="" projection=""
+	local -a release_args=()
+	[[ -z "$worker_login" ]] || release_args+=(--remove-assignee "$worker_login")
 	linked_prs_json=$(gh pr list --repo "$repo_slug" --state all \
 		--search "#${issue_num} in:body" \
-		--json number,state,body --limit 20 2>/dev/null || true)
-	if [[ -z "$linked_prs_json" ]]; then
-		linked_prs_json="[]"
-	fi
-	if printf '%s' "$linked_prs_json" | jq -e --arg num "$issue_num" \
-		'[.[] | select((.state == "OPEN" or .state == "MERGED") and ((.body // "") | test("(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]*#" + $num + "\\b"; "i")))] | length > 0' \
-		>/dev/null 2>&1; then
-		has_linked_pr=true
-	fi
-	linked_open_pr_numbers=$(printf '%s' "$linked_prs_json" | jq -r --arg num "$issue_num" \
-		'.[] | select(.state == "OPEN" and ((.body // "") | test("(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]*#" + $num + "\\b"; "i"))) | .number' \
-		2>/dev/null || true)
-	if [[ -n "$linked_open_pr_numbers" ]]; then
-		has_open_linked_pr=1
-	fi
-
-	local -a _flags=()
-	_flags+=(--remove-label "status:queued")
-	_flags+=(--remove-label "status:claimed")
-	_flags+=(--remove-label "status:in-progress")
-
-	if [[ "$has_linked_pr" != "true" ]]; then
-		_flags+=(--remove-label "status:in-review")
-		_flags+=(--add-label "status:available")
-		if [[ -n "$worker_login" ]]; then
-			_flags+=(--remove-assignee "$worker_login")
-		fi
-	elif [[ "$has_open_linked_pr" -eq 1 && ",${labels_json}," != *",status:done,"* ]]; then
-		_flags+=(--remove-label "status:available")
-		_flags+=(--add-label "status:in-review")
-	fi
-
-	gh issue edit "$issue_num" --repo "$repo_slug" "${_flags[@]}" 2>/dev/null || return 1
-	if [[ "$has_open_linked_pr" -eq 1 ]]; then
-		local linked_pr_number=""
-		while IFS= read -r linked_pr_number; do
-			[[ -z "$linked_pr_number" ]] && continue
-			set_issue_status "$linked_pr_number" "$repo_slug" "in-review" >/dev/null 2>&1 || true
-		done <<<"$linked_open_pr_numbers"
-	fi
-	return 0
+		--json number,state,isDraft,body --limit 20 2>/dev/null) || return 1
+	projection=$(printf '%s' "$linked_prs_json" | jq -r --arg num "$issue_num" '
+		[.[] | select((.body // "") | test("(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]*#" + $num + "\\b"; "i"))]
+		| if length == 0 then "available"
+		elif ([.[] | select(.state == "OPEN")] | length) != 0 and
+			([.[] | select(.state == "OPEN")] | length) != 1 then "ambiguous"
+		elif any(.state == "OPEN" and .isDraft == true) then "blocked"
+		elif any(.state == "OPEN" and .isDraft == false) then "in-review"
+		elif any(.state == "MERGED") then "done"
+		else "available" end
+	' 2>/dev/null) || return 1
+	case "$projection" in
+	available)
+		set_issue_status "$issue_num" "$repo_slug" available \
+			${release_args[@]+"${release_args[@]}"} >/dev/null 2>&1
+		;;
+	blocked)
+		set_issue_status "$issue_num" "$repo_slug" blocked \
+			${release_args[@]+"${release_args[@]}"} >/dev/null 2>&1
+		;;
+	in-review)
+		set_issue_status "$issue_num" "$repo_slug" in-review >/dev/null 2>&1
+		;;
+	done)
+		set_issue_status "$issue_num" "$repo_slug" "done" >/dev/null 2>&1
+		;;
+	*) return 1 ;;
+	esac
+	return $?
 }
 
 # =============================================================================

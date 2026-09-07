@@ -27,7 +27,7 @@ Applied to GitHub issues. The pulse checks these before spawning a worker.
 | `contributor` | `pulse-issue-reconcile.sh` | Contributor health dashboard — pulse-managed, not a dispatch target. |
 | `quality-review` | `pulse-issue-reconcile.sh` | Daily quality review tracker — pulse-managed. |
 | `routine-tracking` | `pulse-issue-reconcile.sh` | Routine execution tracking — pulse skips these unconditionally. |
-| `status:blocked` | `dispatch-dedup-helper.sh`, dependency and circuit-breaker recovery | Machine-recoverable structural block: incomplete dependencies, exhausted retry/cost limits, or infrastructure repair. Restore `status:available` only after the blocker is verified resolved. |
+| `status:blocked` | `dispatch-dedup-helper.sh`, dependency and circuit-breaker recovery | Machine-recoverable structural block or stopped partial draft. Its structured evidence must state the minimal reason and next action. Restore `status:available` only after the blocker is verified resolved. |
 
 Permission grants are limited to exact-pattern `bash` and `external_directory` requests, bound to the issue, request digest, worker session, branch, and worktree hash, and expire after four hours. Action-only permissions and credential-bearing or unbounded paths remain non-grantable.
 
@@ -84,7 +84,7 @@ These labels DO NOT block dispatch on their own. They become blockers only when 
 | Label | Block condition |
 |-------|----------------|
 | `origin:interactive` + any assignee | GH#18352: interactive session claimed this issue — blocks dispatch until `interactive-session-helper.sh release` |
-| `status:queued` / `status:in-progress` / `status:in-review` / `status:claimed` + non-passive assignee | Active lifecycle state with owner — safe to dispatch only when `_has_active_claim` returns false |
+| `status:queued` / `status:in-progress` / `status:in-review` / `status:claimed` + non-passive assignee | Active lifecycle state with owner — safe to dispatch only when `_has_active_claim` returns false. `status:in-review` is reserved for a non-draft review-ready PR; interactive ownership uses `status:claimed`. |
 
 ### PR Auto-Merge Blockers (block merge, not dispatch)
 

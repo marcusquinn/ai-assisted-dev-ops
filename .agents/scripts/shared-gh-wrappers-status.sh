@@ -464,11 +464,11 @@ _status_label_contract() {
 	printf '%s\t%s\t%s\n' \
 		"status:available" "0e8a16" "Task is available for claiming" \
 		"status:queued" "fbca04" "Worker dispatched, not yet started" \
-		"status:claimed" "f9d0c4" "Interactive session claimed this task" \
+		"status:claimed" "f9d0c4" "Interactive implementation is actively claimed" \
 		"status:in-progress" "1d76db" "Worker actively running" \
-		"status:in-review" "5319e7" "PR open, awaiting review/merge" \
+		"status:in-review" "5319e7" "Non-draft PR ready for review/merge" \
 		"status:done" "6f42c1" "Task is complete" \
-		"status:blocked" "d93f0b" "Waiting on blocker task"
+		"status:blocked" "d93f0b" "Partial work blocked; inspect reason and next action"
 	return 0
 }
 

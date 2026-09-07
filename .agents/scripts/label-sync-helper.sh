@@ -51,11 +51,11 @@ GITHUB_DEFAULT_LABELS=(
 STATUS_LABELS=(
 	"status:available|0E8A16|Task is available for claiming"
 	"status:queued|FBCA04|Worker dispatched, not yet started"
-	"status:claimed|F9D0C4|Interactive session claimed this task"
+	"status:claimed|F9D0C4|Interactive implementation is actively claimed"
 	"status:in-progress|1D76DB|Worker actively running"
-	"status:in-review|5319E7|PR open, awaiting review/merge"
+	"status:in-review|5319E7|Non-draft PR ready for review/merge"
 	"status:done|6F42C1|Task is complete"
-	"status:blocked|D73A4A|Waiting on blocker task"
+	"status:blocked|D73A4A|Partial work blocked; inspect reason and next action"
 )
 
 # --- Status Exceptions (out-of-band, not managed by set_issue_status) ---

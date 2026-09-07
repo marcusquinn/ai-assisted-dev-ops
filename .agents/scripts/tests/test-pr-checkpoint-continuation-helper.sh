@@ -263,7 +263,7 @@ STUB_ISSUE_JSON="$(valid_issue_json '' 'stale-runner')"
 STATUS_CALLS=""
 DISPATCH_RESULT=0
 if _pcc_dispatch "owner/repo" "${TEST_ROOT}/repo" "42" "123" "stale-runner" "current-runner" >/dev/null &&
-	[[ "$STATUS_CALLS" == '123 owner/repo in-review --add-assignee current-runner --remove-assignee stale-runner' ]] &&
+	[[ "$STATUS_CALLS" == '123 owner/repo in-progress --add-assignee current-runner --remove-assignee stale-runner' ]] &&
 	[[ "$PCC_ISSUE_ASSIGNEE" == "current-runner" ]] &&
 	[[ "$(_prrts_worker_login 42)" == "current-runner" ]]; then
 	print_result "cross-runner continuation transfers exact issue ownership before launch" 0
@@ -276,7 +276,7 @@ STUB_ISSUE_JSON="$(valid_issue_json '[{"name":"status:queued"}]' 'stale-runner')
 STATUS_CALLS=""
 DISPATCH_RESULT=1
 if ! _pcc_dispatch "owner/repo" "${TEST_ROOT}/repo" "42" "123" "stale-runner" "current-runner" >/dev/null &&
-	[[ "$STATUS_CALLS" == $'123 owner/repo in-review --add-assignee current-runner --remove-assignee stale-runner\n123 owner/repo queued --add-assignee stale-runner --remove-assignee current-runner' ]] &&
+	[[ "$STATUS_CALLS" == $'123 owner/repo in-progress --add-assignee current-runner --remove-assignee stale-runner\n123 owner/repo queued --add-assignee stale-runner --remove-assignee current-runner' ]] &&
 	[[ "$PCC_ISSUE_ASSIGNEE" == "stale-runner" && "$PCC_OWNERSHIP_TRANSFERRED" -eq 0 ]] &&
 	printf '%s' "$STUB_ISSUE_JSON" | jq -e '
 		.assignees[0].login == "stale-runner" and

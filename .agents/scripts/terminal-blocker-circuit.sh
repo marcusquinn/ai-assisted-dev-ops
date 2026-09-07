@@ -325,7 +325,7 @@ _terminal_blocker_recovery() {
 	[[ "$issue" =~ ^[0-9]+$ ]] || issue="$_TBC_UNKNOWN"
 	# Correlate attempts without publishing runner names or arbitrary env text.
 	attempt=$(_terminal_blocker_hash "${AIDEVOPS_ATTEMPT_ID:-${WORKER_SESSION_KEY:-unknown}}") || attempt="$_TBC_UNKNOWN"
-	printf 'Terminal blocker: reason=%s owner=%s task=%s attempt=%s.\nNext action: %s\nRaw evidence remains in protected worker telemetry.\n' \
+	printf 'Terminal blocker: reason=%s owner=%s task=%s attempt=%s.\nProjected state: status:blocked.\nNext action: %s\nRaw evidence remains in protected worker telemetry.\n' \
 		"$reason" "$owner" "$issue" "$attempt" "$action"
 	return 0
 }

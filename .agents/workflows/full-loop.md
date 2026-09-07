@@ -74,7 +74,7 @@ Extract first positional arg; if ` -- ` present, use suffix (t158). Resolve `t\d
 
 **Implementation context (t1901):** Read issue body's "Worker Guidance"/"How" section first. When present, follow file paths, implementation steps, and verification commands directly. When absent or incomplete, do not stop by default: do bounded discovery from the issue title/body, search exact error terms, inspect likely target files, and proceed if the problem is actionable. Exit `BLOCKED` for "missing implementation context" only when the issue is too vague to identify expected behavior, target area, or safe verification after bounded discovery. Headless runtime treats that exact blocker as recoverable once: it resumes the session with a brief-recovery prompt to improve the linked issue body and retry before recording `BLOCKED`.
 
-- **Interactive claim (t2056 — STRUCTURAL):** `full-loop-helper.sh start` automatically calls `interactive-session-helper.sh claim` for non-headless sessions when an issue number is present in the prompt. The helper first verifies maintainer-equivalent repo access; managed repos get `status:in-review` + self-assignment + a claim comment to block pulse dispatch, while external upstream repos skip claim/label/comment routines and should use the normal PR contribution flow.
+- **Interactive claim (t2056 — STRUCTURAL):** `full-loop-helper.sh start` automatically calls `interactive-session-helper.sh claim` for non-headless sessions when an issue number is present in the prompt. The helper first verifies maintainer-equivalent repo access; managed repos get `status:claimed` + self-assignment + a claim comment to block pulse dispatch, while external upstream repos skip claim/label/comment routines and should use the normal PR contribution flow.
 - **Maintainer gate pre-check (GH#17810/GH#22854 — MANDATORY):** Verify issue is not blocked by `hold-for-review` or structural dispatch blockers. `needs-maintainer-review` remains a non-maintainer trust gate: headless workers block on it, while OWNER/MEMBER interactive sessions may continue only when the issue author and all comments are maintainer-only. Headless workers must also verify the issue has an assignee. OWNER/MEMBER interactive sessions on managed repos treat a missing assignee as actionable state: `full-loop-helper.sh start` claims/self-assigns the open issue and continues. External upstream repos do not use the maintainer gate/claim routine. Exit BLOCKED only for the enforced gate in the current mode.
 - **Approval freshness:** Before reporting that cryptographic approval is missing or requesting another signature, run `approval-helper.sh verify issue <number> <owner/repo>` against current GitHub state. Do not infer approval from cached labels or local `sudo` availability.
 - **Decomposition (t1408.2):** Skip if `--no-decompose` or has subtasks. `task-decompose-helper.sh classify "$TASK_DESC"`. Composite headless → auto-decompose, exit `DECOMPOSED: ...`. Max depth 3.
@@ -96,7 +96,7 @@ entrypoint instead of calling `full-loop-helper.sh start` directly:
 ```
 
 This route keeps worker-ready issues eligible for `auto-dispatch` while the
-temporary `status:in-review` + assignee claim blocks concurrent pickup. Release
+temporary `status:claimed` + assignee claim blocks concurrent pickup. Release
 with unassignment restores automatic continuation when unfinished work remains.
 Do not add `no-auto-dispatch` merely because implementation starts interactively;
 reserve `lockdown` for an explicit durable hold or whole-pulse insulation.
