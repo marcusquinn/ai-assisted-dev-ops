@@ -280,6 +280,126 @@ class SourceAccessHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(HELPER.SourceAccessError, "TLS roots are unavailable"):
                 core._github_tls_context()
 
+    def _issue_snapshot_fixture(self) -> tuple[object, dict]:
+        actor = {"id": 7, "node_id": "U_fixture", "login": "fixture", "type": "User"}
+        created = "2026-09-01T12:00:00Z"
+        issue = {"id": 1234, "node_id": "I_fixture", "number": 123, "user": actor,
+                 "author_association": "OWNER", "created_at": created,
+                 "title": "Unicode café 😀 \x7f", "body": "synthetic issue scope",
+                 "state": "open", "locked": True, "active_lock_reason": "resolved",
+                 "labels": [{"id": 2, "node_id": "L_fixture", "name": "enhancement"}],
+                 "assignees": [actor], "milestone": None}
+        comments = [{"id": 10, "node_id": "C_fixture", "user": actor,
+                     "author_association": "OWNER", "created_at": created, "body": "scope comment"},
+                    {"id": 11, "user": {**actor, "type": "Bot"}, "body": "bot status"}]
+        timeline = [{"id": 20, "event": "locked", "created_at": created, "actor": actor},
+                    {"id": 21, "event": "cross-referenced", "created_at": created,
+                     "actor": actor, "source": {"issue": {**issue, "repository": {"full_name": "Fixture/Repo"}}}}]
+        evidence = {"issue": issue, "comments": comments, "timeline": timeline}
+        reader = mock.Mock(spec=HELPER._SOURCE_CORE.GitHubIssueReader)
+        reader.repository = "fixture/repo"
+        reader.number = 123
+        reader.issue.return_value = issue
+        reader.collection.side_effect = lambda kind: evidence[kind]
+        return reader, evidence
+
+    def _issue_snapshot_oracle(self, evidence: dict, excluded: str, cutoff: str) -> bytes:
+        script = ('source "$1"; gh() { case "$2" in '
+                  '*/comments*) printf "%s" "$FIXTURE_COMMENTS" ;; '
+                  '*/timeline*) printf "%s" "$FIXTURE_TIMELINE" ;; '
+                  '*) printf "%s" "$FIXTURE_ISSUE" ;; esac; }; '
+                  'approval_snapshot_v2_build issue 123 fixture/repo "$2" "$3"')
+        environment = {**os.environ, "AIDEVOPS_TEMP_DIR": str(self.root / "snapshot-oracle"),
+                       "FIXTURE_ISSUE": json.dumps(evidence["issue"]),
+                       "FIXTURE_COMMENTS": json.dumps([evidence["comments"]]),
+                       "FIXTURE_TIMELINE": json.dumps([evidence["timeline"]])}
+        # Parity oracle only: no shell or jq execution is used by the root broker.
+        result = subprocess.run(  # nosec B603 -- fixed local oracle script and synthetic environment
+            ["/bin/bash", "-c", script, "snapshot-fixture", str(SCRIPTS_DIR / "approval-snapshot-v2.sh"), excluded, cutoff],
+            env=environment, capture_output=True, check=True, timeout=15,
+        )
+        return result.stdout.rstrip(b"\n")
+
+    def test_native_issue_signing_snapshot_matches_existing_v2_bytes(self) -> None:
+        core = HELPER._SOURCE_CORE
+        reader, evidence = self._issue_snapshot_fixture()
+        cutoff = "2026-09-02T12:00:00Z"
+        for excluded in (None, 10):
+            with self.subTest(excluded=excluded):
+                snapshot = core.build_issue_signing_snapshot(reader, cutoff, excluded)
+                expected = self._issue_snapshot_oracle(evidence, "" if excluded is None else str(excluded), cutoff)
+                self.assertEqual(core.issue_snapshot_bytes(snapshot), expected)
+        reader.issue.side_effect = [evidence["issue"], {**evidence["issue"], "body": "changed"}]
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "changed while collecting"):
+            core.build_issue_signing_snapshot(reader, cutoff)
+
+    def test_native_issue_snapshot_keeps_untrusted_markers_and_rejects_lock_replay(self) -> None:
+        core = HELPER._SOURCE_CORE
+        reader, evidence = self._issue_snapshot_fixture()
+        comment = evidence["comments"][0]
+        marker = ("<!-- aidevops-signed-approval -->\n<!-- stale-recovery-tick:0 "
+                  "(reset: auto-approved by maintainer — fixture) -->\nAuto-approved: fixture. Stale recovery tick reset.")
+        evidence["comments"] = [{**comment, "body": marker, "author_association": "NONE"}]
+        cutoff = "2026-09-02T12:00:00Z"
+        snapshot = core.build_issue_signing_snapshot(reader, cutoff)
+        self.assertEqual(len(snapshot["comments"]), 1)
+        self.assertEqual(core.issue_snapshot_bytes(snapshot), self._issue_snapshot_oracle(evidence, "", cutoff))
+        evidence["comments"][0]["author_association"] = "OWNER"
+        self.assertEqual(core.build_issue_signing_snapshot(reader, cutoff)["comments"], [])
+        lock = evidence["timeline"][0]
+        evidence["timeline"].append({**lock, "id": 99, "event": "unlocked"})
+        self.assertIsNone(core.build_issue_signing_snapshot(reader, cutoff)["lifecycle"]["lock_anchor"])
+        evidence["timeline"][1]["created_at"] = "invalid"
+        with self.assertRaises(HELPER.SourceAccessError):
+            core.build_issue_signing_snapshot(reader, cutoff)
+
+    def test_bounded_issue_reader_reaps_timed_out_child(self) -> None:
+        core = HELPER._SOURCE_CORE
+        reader = core.GitHubIssueReader("fixture/repo", 123)
+        before = {child.pid for child in core.multiprocessing.active_children()}
+        with mock.patch.object(core, "build_issue_signing_snapshot", return_value={"fixture": True}):
+            self.assertEqual(core.collect_issue_signing_snapshot(reader, "2026-09-02T12:00:00Z"), {"fixture": True})
+        with (mock.patch.object(core, "GITHUB_OPERATION_SECONDS", 0.05),
+              mock.patch.object(core, "build_issue_signing_snapshot", side_effect=lambda *_args: core.time.sleep(10))):
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "timed out"):
+                core.collect_issue_signing_snapshot(reader, "2026-09-02T12:00:00Z")
+        self.assertEqual({child.pid for child in core.multiprocessing.active_children()}, before)
+
+    def test_github_credential_helper_drops_privileges_and_suppresses_output(self) -> None:
+        core = HELPER._SOURCE_CORE
+        account = mock.Mock(pw_dir=str(self.home), pw_name="fixture", pw_gid=123)
+        with (mock.patch.object(core.pwd, "getpwuid", return_value=account),
+              mock.patch.object(core.os, "geteuid", return_value=0),
+              mock.patch.object(core.subprocess, "Popen") as spawn,
+              mock.patch.object(core.select, "select", return_value=([42], [], [])),
+              mock.patch.object(core.os, "read", side_effect=[b"synthetic-private-token\n", b""])):
+            process = spawn.return_value
+            process.stdout.fileno.return_value = 42
+            process.wait.return_value = 0
+            process.poll.return_value = 0
+            self.assertEqual(core.github_credential_for_user(self.uid), "synthetic-private-token")
+            options = spawn.call_args.kwargs
+            self.assertEqual(options["user"], self.uid)
+            self.assertEqual(options["group"], 123)
+            self.assertEqual(options["extra_groups"], [])
+            self.assertEqual(options["stderr"], subprocess.DEVNULL)
+            self.assertNotIn("synthetic-private-token", str(spawn.call_args))
+            process.stdout.close.assert_called_once()
+
+    def test_github_credential_timeout_kills_child_without_printing_data(self) -> None:
+        core = HELPER._SOURCE_CORE
+        account = mock.Mock(pw_dir=str(self.home), pw_name="fixture", pw_gid=123)
+        with (mock.patch.object(core.pwd, "getpwuid", return_value=account),
+              mock.patch.object(core.subprocess, "Popen") as spawn,
+              mock.patch.object(core.select, "select", return_value=([], [], []))):
+            process = spawn.return_value
+            process.stdout.fileno.return_value = 42
+            process.poll.return_value = None
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "timed out"):
+                core.github_credential_for_user(self.uid)
+            process.kill.assert_called_once()
+            process.stdout.close.assert_called_once()
+
     def _proposal_cli(self, arguments: list[str], now: int) -> str:
         output = io.StringIO()
         with (mock.patch.object(HELPER, "Config", return_value=self.config),

@@ -8,10 +8,12 @@ import hashlib
 import http.client
 import json
 import math
+import multiprocessing
 import os
 import pwd
 import re
 import secrets
+import select
 import socket
 import ssl
 import stat
@@ -63,6 +65,8 @@ GITHUB_API_HOST = "api.github.com"
 GITHUB_RESPONSE_BYTES = 2 * 1024 * 1024
 GITHUB_COLLECTION_BYTES = 8 * 1024 * 1024
 GITHUB_MAX_PAGES = 32
+GITHUB_OPERATION_SECONDS = 20
+GITHUB_SNAPSHOT_BYTES = 20 * 1024 * 1024
 
 
 def _current_timestamp() -> int:
@@ -189,6 +193,261 @@ class GitHubIssueReader:
             if len(records) < 100:
                 return result
         raise SourceAccessError("GitHub verification collection exceeds the page limit")
+
+
+def _issue_fields(value: Any, strings: str, nullable: str = "") -> dict[str, Any]:
+    _require_source(isinstance(value, dict), "invalid issue snapshot object")
+    result = {key: value.get(key) if value.get(key) is not None else "" for key in strings.split()}
+    _require_source(all(isinstance(item, str) for item in result.values()), "invalid issue snapshot text")
+    result.update({key: value.get(key) for key in nullable.split()})
+    _require_source(all(item is None or type(item) in (str, int) for item in result.values()),
+                    "invalid issue snapshot scalar")
+    return result
+
+
+def _issue_actor(value: Any) -> dict[str, Any]:
+    return _issue_fields(value or {}, "node_id login type", "id")
+
+
+def _issue_timestamp(value: Any) -> str:
+    _require_source(isinstance(value, str) and re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value) is not None,
+        "issue evidence has no authoritative timestamp")
+    try:
+        _require_source(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")) == value,
+                        "issue evidence timestamp is invalid")
+    except ValueError:
+        raise SourceAccessError("issue evidence timestamp is invalid") from None
+    return value
+
+
+def _issue_ignored_comment(comment: dict[str, Any], excluded_id: int | None) -> bool:
+    if comment.get("id") == excluded_id or (comment.get("user") or {}).get("type") == "Bot":
+        return True
+    if comment.get("author_association") not in ("OWNER", "MEMBER", "COLLABORATOR"):
+        return False
+    body = comment.get("body") or ""
+    automatic = (body.startswith("<!-- aidevops-signed-approval -->\n<!-- stale-recovery-tick:0 (reset: auto-approved by maintainer — ")
+                 and ") -->\nAuto-approved: " in body and ". Stale recovery tick reset." in body)
+    claim = re.fullmatch(
+        r"<!-- aidevops-interactive-claim/v1 -->\n<!-- ops:start -->\n> Interactive session claimed by @[^\n`]+"
+        r"(?: in `[^`\n]+`)? on [^\n]+\.\n> Pulse dispatch blocked via `status:in-review` \+ self-assignment\.\n"
+        r"<!-- ops:end -->\n(?:<!-- aidevops:origin:interactive -->\n)?<!-- aidevops:sig -->\n---\n[^\n]+\n?",
+        body,
+    )
+    return automatic or claim is not None
+
+
+def _issue_comments(comments: list[dict[str, Any]], excluded_id: int | None) -> list[dict[str, Any]]:
+    result = []
+    for comment in comments:
+        _require_source(type(comment.get("id")) is int and comment["id"] > 0, "invalid issue comment identity")
+        if _issue_ignored_comment(comment, excluded_id):
+            continue
+        projected = _issue_fields(comment, "node_id author_association created_at body",
+                                  "id path line side commit_id original_commit_id")
+        projected.update(source="conversation", author=_issue_actor(comment.get("user")),
+                         updated_at=comment.get("updated_at") or comment.get("created_at") or "")
+        result.append(projected)
+    _require_source(len({item["id"] for item in result}) == len(result), "duplicate issue comment evidence")
+    return sorted(result, key=lambda item: item["id"])
+
+
+def _issue_reference(event: dict[str, Any]) -> dict[str, Any]:
+    result = _issue_fields(event, "event node_id created_at commit_id commit_url", "id")
+    result.update(updated_at=event.get("updated_at") or event.get("created_at") or "",
+                  actor=_issue_actor(event.get("actor")), source=None)
+    source = (event.get("source") or {}).get("issue")
+    if source is not None:
+        projection = _issue_fields(source, "node_id title body state", "number id")
+        projection.update(kind="pr" if source.get("pull_request") is not None else "issue",
+                          repository=((source.get("repository") or {}).get("full_name") or "").lower(),
+                          author=_issue_actor(source.get("user")))
+        result["source"] = projection
+    return result
+
+
+def _issue_references(timeline: list[dict[str, Any]], cutoff: str) -> list[dict[str, Any]]:
+    result = []
+    for event in timeline:
+        if event.get("event") not in ("cross-referenced", "connected", "disconnected", "referenced"):
+            continue
+        timestamp = _issue_timestamp(event.get("created_at"))
+        if timestamp <= cutoff:
+            result.append(_issue_reference(event))
+    return sorted(result, key=lambda item: (item["created_at"], item["event"], item["id"] or 0))
+
+
+def _issue_lock_anchor(issue: dict[str, Any], timeline: list[dict[str, Any]]) -> dict[str, Any] | None:
+    locks = [event for event in timeline if event.get("event") in ("locked", "unlocked")]
+    if issue.get("locked") is not True or not locks:
+        return None
+    for event in locks:
+        _issue_timestamp(event.get("created_at"))
+        _require_source(type(event.get("id")) is int and event["id"] > 0, "invalid issue lock identity")
+    anchor = max(locks, key=lambda event: (event["created_at"], event["id"]))
+    actor = anchor.get("actor") or {}
+    _require_source(actor.get("type") == "User" and type(actor.get("id")) is int and actor["id"] > 0,
+                    "issue lock has no authoritative actor")
+    _require_source(isinstance(actor.get("login"), str) and re.fullmatch(r"[A-Za-z0-9_.-]+", actor["login"]) is not None,
+                    "issue lock has no authoritative actor")
+    if anchor["event"] != "locked":
+        return None
+    result = _issue_fields(anchor, "node_id created_at", "id")
+    result["actor"] = {key: actor[key] for key in ("id", "login", "type")}
+    return result
+
+
+def _issue_lifecycle(issue: dict[str, Any], timeline: list[dict[str, Any]]) -> dict[str, Any]:
+    result = _issue_fields(issue, "state", "state_reason active_lock_reason")
+    result.update(locked=issue.get("locked") or False, lock_anchor=_issue_lock_anchor(issue, timeline))
+    labels = [_issue_fields(label, "node_id name", "id") for label in issue.get("labels") or []]
+    assignees = [_issue_actor(actor) for actor in issue.get("assignees") or []]
+    result["labels"] = sorted(labels, key=lambda label: (label["name"], label["id"] or 0))
+    result["assignees"] = sorted(assignees, key=lambda actor: (actor["login"], actor["id"] or 0))
+    milestone = issue.get("milestone")
+    result["milestone"] = None if milestone is None else _issue_fields(milestone, "node_id title", "id number")
+    return result
+
+
+def build_issue_signing_snapshot(reader: GitHubIssueReader, issued_at: str,
+                                 excluded_comment_id: int | None = None) -> dict[str, Any]:
+    """Reconstruct the V2 signing snapshot from trusted REST, never a caller verdict.
+
+    Additional post-signing worker activity is retained conservatively. This is
+    not the permissive historical lifecycle-continuity verifier.
+    """
+    _require_source(excluded_comment_id is None or (type(excluded_comment_id) is int and excluded_comment_id > 0),
+                    "invalid excluded approval comment identity")
+    cutoff = _issue_timestamp(issued_at)
+    issue = reader.issue()
+    comments = reader.collection("comments")
+    timeline = reader.collection("timeline")
+    _require_source(issue == reader.issue(), "issue changed while collecting its signing snapshot")
+    _require_source(type(issue.get("id")) is int and issue["id"] > 0 and isinstance(issue.get("node_id"), str),
+                    "issue has no authoritative identity")
+    actor = _issue_actor(issue.get("user"))
+    actor["association"] = issue.get("author_association") or ""
+    return {
+        "schema": "aidevops-approval-snapshot/v2",
+        "target": {"kind": "issue", "repository": reader.repository.lower(), "number": reader.number,
+                   "id": issue["id"], "node_id": issue["node_id"]},
+        "author": actor, **_issue_fields(issue, "created_at title body"),
+        "comments": _issue_comments(comments, excluded_comment_id),
+        "linked_references": _issue_references(timeline, cutoff),
+        "lifecycle": _issue_lifecycle(issue, timeline),
+    }
+
+
+def issue_snapshot_bytes(snapshot: dict[str, Any]) -> bytes:
+    """V2 uses jq's UTF-8 JSON encoding, unlike the source proposal's ASCII JSON."""
+    return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False).replace("\x7f", "\\u007f").encode("utf-8")
+
+
+def _issue_snapshot_child(sender: Any, reader: GitHubIssueReader, issued_at: str, excluded: int | None) -> None:
+    try:
+        content = issue_snapshot_bytes(build_issue_signing_snapshot(reader, issued_at, excluded))
+        _require_source(len(content) <= GITHUB_SNAPSHOT_BYTES, "issue snapshot exceeds the limit")
+        sender.send_bytes(b"OK\n" + content)
+    except Exception:
+        sender.send_bytes(b"ERROR")
+    finally:
+        sender.close()
+
+
+def _stop_issue_reader(process: Any) -> None:
+    if process.pid is not None:
+        if process.is_alive():
+            process.terminate()
+        process.join(1)
+        if process.is_alive():
+            process.kill()
+            process.join(1)
+        _require_source(not process.is_alive(), "issue reader cleanup failed; no authority was issued")
+    process.close()
+
+
+def collect_issue_signing_snapshot(reader: GitHubIssueReader, issued_at: str,
+                                   excluded_comment_id: int | None = None) -> dict[str, Any]:
+    """Bound DNS, headers, pagination and parsing in an owned, non-daemon child.
+
+    Only bytes cross the return pipe; no pickle is accepted from the child.
+    Fork runs the already-validated core, not a mutable executable or callback.
+    """
+    _require_source(type(reader) is GitHubIssueReader, "unsupported issue reader")
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_issue_snapshot_child,
+                              args=(sender, reader, issued_at, excluded_comment_id), daemon=False)
+    try:
+        process.start()
+        sender.close()
+        _require_source(receiver.poll(GITHUB_OPERATION_SECONDS), "issue verification timed out; no authority was issued")
+        content = receiver.recv_bytes(GITHUB_SNAPSHOT_BYTES + 3)
+        _require_source(content.startswith(b"OK\n"), "issue verification failed; no authority was issued")
+        return json.loads(content[3:].decode("utf-8"), object_pairs_hook=_github_json_object,
+                          parse_constant=_github_json_constant, parse_float=_github_json_float)
+    except (OSError, EOFError, ValueError):
+        raise SourceAccessError("issue verification failed; no authority was issued") from None
+    finally:
+        receiver.close()
+        sender.close()
+        _stop_issue_reader(process)
+
+
+def _credential_output(process: subprocess.Popen, deadline: float) -> str:
+    content = bytearray()
+    _require_source(process.stdout is not None, "GitHub authentication is unavailable")
+    descriptor = process.stdout.fileno()
+    while True:
+        remaining = deadline - time.monotonic()
+        _require_source(remaining > 0, "GitHub authentication timed out")
+        ready, _, _ = select.select([descriptor], [], [], remaining)
+        _require_source(bool(ready), "GitHub authentication timed out")
+        chunk = os.read(descriptor, 4098 - len(content))
+        if not chunk:
+            break
+        content.extend(chunk)
+        _require_source(len(content) <= 4097, "GitHub authentication output exceeds the limit")
+    _require_source(process.wait(timeout=max(0.01, deadline - time.monotonic())) == 0,
+                    "GitHub authentication is unavailable")
+    credential = bytes(content).decode("ascii").strip()
+    _require_source(re.fullmatch(r"[A-Za-z0-9_.-]{1,4096}", credential) is not None,
+                    "GitHub authentication is unavailable")
+    return credential
+
+
+def github_credential_for_user(uid: int) -> str:
+    """Read existing gh authentication as that user; never execute gh as root.
+
+    The token is only data for the fixed TLS peer, not proof of issue approval.
+    Credential values never enter argv, logs, errors or a persistent artifact.
+    """
+    _require_source(type(uid) is int and uid > 0, "GitHub authentication requires a non-root owner")
+    account = pwd.getpwuid(uid)
+    environment = {"HOME": account.pw_dir, "USER": account.pw_name, "LOGNAME": account.pw_name,
+                   "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                   "GH_PROMPT_DISABLED": "1", "GH_HOST": "github.com"}
+    identity = {"user": uid, "group": account.pw_gid, "extra_groups": []} if os.geteuid() == 0 else {}
+    _require_source(os.geteuid() in (0, uid), "GitHub authentication user mismatch")
+    # #aidevops:trust-boundary — Popen drops all root/group authority in its
+    # fork/exec implementation BEFORE env resolves or executes user-managed gh.
+    process = subprocess.Popen(  # nosec B603 -- fixed argv; user/group drop precedes exec
+        ["/usr/bin/env", "gh", "auth", "token", "--hostname", "github.com"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        cwd=account.pw_dir, env=environment, close_fds=True, **identity,
+    )
+    try:
+        return _credential_output(process, time.monotonic() + 10)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        raise SourceAccessError("GitHub authentication is unavailable") from None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=2)
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 @dataclass(frozen=True)
