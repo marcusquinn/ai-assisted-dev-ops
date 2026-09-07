@@ -39,7 +39,7 @@ seo/seo-audit-skill/aeo-geo-patterns/,seo/seo-audit-skill/aeo-geo-patterns subag
 seo/seo-audit-skill/,seo/seo-audit-skill subagents,ai-writing-detection
 seo/,seo subagents,seo-audit|seo-export|seo-fanout|seo-geo|seo-hallucination-defense|seo-opportunities|seo-optimize|seo-optimizer|seo-regex|seo-sro|seo-write|serper|site-crawler|sro-grounding|tech-stack|transcript-seo|upscale|video-schema
 seo/video-schema/,seo/video-schema subagents,clip-key-moments|faqpage-video|howto-video|property-reference|speakable|validation|videoobject
-seo/,seo subagents,video-seo
+seo/,seo subagents,video-seo|youtube-description-link-acquisition
 services/accounting/,services/accounting subagents,quickfile
 services/analytics/,services/analytics subagents,google-analytics
 services/communications/,services/communications subagents,bitchat|convos|cross-channel-conversation-continuity|discord|google-chat|imessage|matrix-bot|matterbridge|msteams|nextcloud-talk|nostr|privacy-comparison|signal|simplex|slack|telegram|telfon|twilio|urbit|whatsapp|xmtp
@@ -65,7 +65,7 @@ services/networking/,services/networking subagents,netbird|nostr-vpn|obscuravpn|
 services/outreach/,services/outreach subagents,cold-outreach|infraforge|instantly|leadsforge|manyreach|smartlead|warmforge
 services/payments/,services/payments subagents,procurement|revenuecat|stripe|superwall
 tools/accessibility/,tools/accessibility subagents,accessibility-audit|accessibility
-tools/ai-assistants/,tools/ai-assistants subagents,agno|buzz-team-interface|capsolver|claude-code|compare-models|datasets|fallback-chains|headless-dispatch|models-composer2|models-flash|models-gemini-reviewer|models-gpt-reviewer|models-haiku|models-opus|models-pro|models-README|models-sonnet|openclaw|opencode-server|overview|research-only|response-scoring|runners-code-reviewer|runners-README|runners-seo-analyst
+tools/ai-assistants/,tools/ai-assistants subagents,agno|buzz-team-interface|capsolver|claude-code|codex-cli|compare-models|datasets|fallback-chains|frontier-harness-eval|headless-dispatch|models-composer2|models-flash|models-gemini-reviewer|models-gpt-reviewer|models-haiku|models-opus|models-pro|models-README|models-sonnet|openclaw|opencode-server|overview|research-only|response-scoring|runners-code-reviewer|runners-README|runners-seo-analyst|runtime-launchers
 tools/ai-generation/,tools/ai-generation subagents,comfy-cli
 tools/ai-orchestration/,tools/ai-orchestration subagents,autogen|crewai|langflow|openprose|overview|packaging
 tools/animation/,tools/animation subagents,animejs
@@ -101,7 +101,7 @@ tools/deployment/,tools/deployment subagents,agent-skills
 tools/deployment/cloudron-app-packaging-skill/,tools/deployment/cloudron-app-packaging-skill subagents,addons-ref|manifest-ref
 tools/deployment/cloudron-app-packaging-skill/manifest-ref/,tools/deployment/cloudron-app-packaging-skill/manifest-ref subagents,01-overview|02-ports|03-addons|04-metadata|05-behavior|06-post-install|07-versioning
 tools/deployment/,tools/deployment subagents,cloudron-app-packaging|cloudron-git-reference|coolify-cli|coolify-setup|coolify|daytona|fly-io|hosting-comparison|uncloud|vercel
-tools/design/,tools/design subagents,brand-identity|colour-palette|design-inspiration|design-md-from-links|design-md|open-design-ingestion|open-design|report-presentation|ui-ux-inspiration
+tools/design/,tools/design subagents,blender|brand-identity|colour-palette|design-inspiration|design-md-from-links|design-md|open-design-ingestion|open-design|report-presentation|ui-ux-inspiration
 tools/diagrams/mermaid-diagrams-skill/,tools/diagrams/mermaid-diagrams-skill subagents,advanced|architecture|cheatsheet|class-er|data-charts|flowcharts|sequence|state-journey
 tools/document/,tools/document subagents,docstrange|document-creation|document-extraction|extraction-schemas
 tools/document/extraction-schemas/,tools/document/extraction-schemas subagents,01-design-principles|02-purchase-invoice|03-expense-receipt|04-credit-note|05-sales-invoice|06-generic-receipt|07-quickfile-mapping|08-vat-handling|09-nominal-codes|10-classification|11-pipeline-integration|12-validation
@@ -138,7 +138,7 @@ tools/ui/nothing-design-skill/,tools/ui/nothing-design-skill subagents,01-philos
 tools/ui/nothing-design-skill/tokens/,tools/ui/nothing-design-skill/tokens subagents,01-typography|02-color|03-spacing|04-motion|05-iconography|06-dot-matrix
 tools/ui/,tools/ui subagents,react-context|react-doctor|react-email|shadcn|tailwind-css|ui-skills|wxt
 tools/verification/,tools/verification subagents,parallel-verify
-tools/video/,tools/video subagents,create-onboarding-video|remotion-3d|remotion-animations|remotion-assets|remotion-audio|remotion-calculate-metadata|remotion-can-decode|remotion-charts|remotion-compositions|remotion-display-captions|remotion-extract-frames|remotion-fonts|remotion-get-audio-duration|remotion-get-video-dimensions|remotion-get-video-duration|remotion-gifs|remotion-images|remotion-import-srt-captions|remotion-lottie|remotion-measuring-dom-nodes|remotion-measuring-text|remotion-sequencing|remotion-tailwind|remotion-text-animations|remotion-timing|remotion-transcribe-captions|remotion-transitions|remotion-trimming|remotion-videos|remotion|video-editor|video-prompt-design|yt-dlp
+tools/video/,tools/video subagents,create-onboarding-video|remotion-3d|remotion-animations|remotion-assets|remotion-audio|remotion-calculate-metadata|remotion-can-decode|remotion-charts|remotion-compositions|remotion-display-captions|remotion-extract-frames|remotion-fonts|remotion-get-audio-duration|remotion-get-video-dimensions|remotion-get-video-duration|remotion-gifs|remotion-images|remotion-import-srt-captions|remotion-lottie|remotion-measuring-dom-nodes|remotion-measuring-text|remotion-sequencing|remotion-tailwind|remotion-text-animations|remotion-timing|remotion-transcribe-captions|remotion-transitions|remotion-trimming|remotion-videos|remotion|video-editor|video-prompt-design|video-use-runtime|yt-dlp
 tools/vision/,tools/vision subagents,create-screenshots|image-editing|image-generation|image-understanding|overview
 tools/voice/,tools/voice subagents,buzz|cloud-tts-apis|cloud-voice-agents|hyprwhspr|ios-shortcut|local-tts-models|pipecat-opencode|qwen3-tts|speech-to-speech|transcription|voice-ai-models|voice-models|voiceink-shortcut
 tools/,tools subagents,wordpress

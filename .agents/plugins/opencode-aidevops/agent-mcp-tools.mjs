@@ -36,6 +36,7 @@ const AGENT_MCP_TOOLS = {
   socket: ["socket_*"],
   // UI
   shadcn: ["shadcn_*"],
+  blender: ["blender-lab_*"],
   // Data / accounting
   outscraper: ["outscraper_*"],
   mainwp: ["localwp_*"],

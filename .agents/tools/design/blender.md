@@ -9,6 +9,8 @@ tools:
   glob: false
   grep: true
   webfetch: true
+  aidevops_mcp: true
+  blender-lab_*: true
 ---
 
 <!-- SPDX-License-Identifier: MIT -->
@@ -32,7 +34,7 @@ Prefer the [Blender Lab MCP](https://www.blender.org/lab/mcp-server/) for the Bl
 
 **Package collision:** both projects use the package and executable name `blender-mcp`. The official source exports `blmcp:main`; the community source lives under `blender_mcp`. Bare `uvx blender-mcp` selects the community package, not Blender Lab. Keep separate virtual environments, absolute executable paths and client names. Never mix their add-ons or assume wire compatibility. Stop one add-on before starting the other on the same port.
 
-This support consists of agent guidance and manually applied MCP templates. It does not install Blender, enable an add-on, start a server, or add a registry-approved `aidevops_mcp` activation target.
+Setup/update deploys a managed launcher and the OpenCode plugin registers `blender-lab` disabled. Only the bounded `blender` agent receives its tools and on-demand `aidevops_mcp` activation. No Blender process, add-on or Python server is installed or started at framework startup. The launcher provisions the official pinned source through an isolated uv tool environment on approved first use, then reuses uv's cache. An aidevops update changes the source only when the reviewed launcher pin changes; transitive dependencies are not fully locked.
 
 ## Security Prerequisite
 
@@ -46,6 +48,34 @@ Blender's warning is explicit: generated Python can remove data or send it remot
 - For the community alternative, set `DISABLE_TELEMETRY=true` and `BLENDER_MCP_SAFE_MODE=1` if explicitly selected. Its script validation is not an OS security boundary. External asset/generation services remain opt-in and may have licence, credential or billing requirements.
 
 ## Official Setup (Inside the Isolated System)
+
+### Managed Provisioning (Recommended)
+
+Install Blender 5.1+, its matching official MCP add-on, Python 3, Git and uv inside the isolated system. The launcher checks the Blender binary version but does not install or open the Blender UI. Set `BLENDER_EXECUTABLE` to the full binary path if it is not on PATH; the standard macOS app path is also detected.
+
+Before starting OpenCode in that system, the **operator**, not the agent, must explicitly attest isolation and approve unguarded code execution:
+
+```bash
+export AIDEVOPS_BLENDER_ISOLATED=1
+export AIDEVOPS_BLENDER_CODE_EXECUTION=approved
+python3 -I ~/.aidevops/agents/scripts/blender-lab-mcp-launcher.py prepare
+```
+
+These flags are operator attestations, **not sandbox verification**. Never set them automatically, in setup/update, or in generated config. They must reach the client process environment (GUI-launched clients may not inherit a terminal's exports). To revoke consent, unset both variables and restart the client; disconnect any existing MCP and stop the add-on immediately. Do not store them on a sensitive general-purpose host.
+
+`prepare` prewarms the official package and Python 3.11 environment without requiring a running bridge; it may download Python, source and dependencies. It runs only the package's help command and never starts the MCP server. First-time downloads can exceed MCP startup timeouts, so prepare before connecting. This is package isolation, not OS isolation. The launcher clears inherited uv/Python source overrides and ignores uv config files; it never falls back to the community package.
+
+Open a disposable scene in Blender, enable the **official** add-on, leave auto-start off and start its bridge on `127.0.0.1:9876`. Only literal IPv4 loopback (`127.0.0.1`) is accepted: the pinned upstream bridge client uses `AF_INET`, not IPv6. An alternative port must match `BLENDER_MCP_PORT` in the client's inherited environment. Then run:
+
+```bash
+python3 -I ~/.aidevops/agents/scripts/blender-lab-mcp-launcher.py check
+```
+
+`check` validates consent, dependencies, Blender version and TCP reachability without downloading or launching the server. Reachability is not add-on identity or compatibility verification: confirm the official add-on in Blender and inspect the actual tool list after MCP initialization. A community bridge on the same port is not interchangeable.
+
+In OpenCode, use the `blender` agent. After confirming prerequisites and user approval, call `aidevops_mcp` with `action: connect`, `name: blender-lab`; use its tools on the following step, then disconnect when finished. Missing consent, dependencies, old Blender or an unavailable bridge fail closed with stderr diagnostics before provisioning. Relay the diagnostic rather than repeatedly reconnecting, changing consent flags, or launching Blender automatically. The generic MCP activation reset does not authorize bypassing a launcher refusal.
+
+### Manual Source Installation (Alternative)
 
 1. Install Blender 5.1 or newer and the matching MCP add-on using the [official installation page](https://www.blender.org/lab/mcp-server/). Install from the Blender Lab repository or its release archive, not the community `addon.py`.
 2. Inspect a reviewed revision of the official source. The commands below use the revision inspected for this guide; review newer revisions before changing the pin. Verify the package in `mcp/pyproject.toml` declares `blender-mcp = "blmcp:main"`.
@@ -66,13 +96,13 @@ Blender's warning is explicit: generated Python can remove data or send it remot
 
 ### OpenCode
 
-Use repository template `configs/blender-lab-opencode-config.json.txt`. Replace its executable placeholder and merge it into a project-local `opencode.json`, preserving existing settings. It starts disabled and requests approval for `blender-lab_*` tools. After confirming isolation and consent, explicitly enable it for the Blender session. Quit and restart OpenCode after config changes. Disable it again when finished.
+With the aidevops plugin, registration is automatic after setup/update and an OpenCode restart; do not enable it globally or edit generated MCP entries. The registry preserves user-owned custom commands while resetting this server to disabled at startup. If you previously applied the manual direct-executable template, remove that old `blender-lab` entry after backing up your config to adopt the managed launcher; retained custom commands do not receive launcher checks.
 
-This is a user-managed server, not an aidevops plugin-registry entry. Do not call `aidevops_mcp connect` for it or modify generated managed MCP entries. Do not relax unrelated permissions to make it work.
+For standalone OpenCode without the plugin, repository template `configs/blender-lab-opencode-config.json.txt` points at the same launcher with a placeholder path. Replace it, merge while preserving other settings, and explicitly enable it only for an approved isolated session. Quit and restart OpenCode after config changes. Without the plugin's on-demand agent, use the client's manual MCP controls. Do not relax unrelated permissions.
 
 ### Other MCP Clients
 
-Use repository template `configs/blender-lab-mcp-config.json.txt` for clients accepting `mcpServers` with `command`, `args` and `env` (for example Claude Desktop). Replace the absolute executable placeholder before registration. These clients may start a registered server immediately: only apply the template after isolation and approval. This is not an OpenCode or Codex config format; translate using the active client's documented schema instead of copying incompatible JSON.
+Use repository template `configs/blender-lab-mcp-config.json.txt` for clients accepting `mcpServers` with `command`, `args` and `env` (for example Claude Desktop). Replace the absolute launcher placeholder before registration. These clients may start a registered server immediately: only apply the template after isolation and approval. This is not an OpenCode or Codex config format; translate using the active client's documented schema instead of copying incompatible JSON. Other clients retain their own activation lifecycle; automatic on-demand agent registration here is OpenCode-specific.
 
 ## Verification and Working Pattern
 
