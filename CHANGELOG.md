@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.332] - 2026-09-07
+
+### Changed
+
+- Maintenance: sync GitHub issue state to TODO.md [skip ci]
+- Maintenance: Reconcile verified prerequisite completion
+
+### Fixed
+
+- resume pinned snapshots with legacy authorization
+- Limit prefetch fallback to failed repositories
+
 ## [3.32.331] - 2026-09-07
 
 ### Changed
