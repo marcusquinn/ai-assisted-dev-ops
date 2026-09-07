@@ -481,6 +481,160 @@ test_detached_claim_does_not_invent_active_owner() {
 	return 0
 }
 
+test_profile_publication_detached_evidence_is_exact_and_fail_closed() {
+	local identity='' evidence='' result='' disposition='' reason='' mode=''
+	local evidence_path="${TEST_DIR}/profile-evidence.json"
+	local rc=0
+	identity=$(jq -cn \
+		'{format:"aidevops-worktree-recovery-v2",archive_path:"/recovery/profile",source_path:"/worktrees/profile-readme",head:"abc123",branch:"detached",producer:"profile-readme-helper.sh",producer_context:"recovery_path=profile-publication-archive profile_scratch=true",source_removal_outcome:"removed"}') || rc=1
+
+	for mode in published unpublished unavailable; do
+		if ! (
+			_worktree_recovery_plan_repo_slug() {
+				printf '%s\n' 'example/profile'
+				return 0
+			}
+			command() {
+				[[ "$1" == '-v' && "$2" == 'gh' ]]
+			}
+			gh() {
+				[[ "$mode" != 'unavailable' ]] || return 1
+				case "$2" in
+				'repos/example/profile')
+					printf '%s\n' 'main'
+					;;
+				'repos/example/profile/compare/abc123...main')
+					if [[ "$mode" == 'published' ]]; then
+						printf 'ahead\tabc123\n'
+					else
+						printf 'diverged\tdef456\n'
+					fi
+					;;
+				*) return 1 ;;
+				esac
+				return 0
+			}
+			_worktree_recovery_plan_profile_publication_evidence_json "$identity" >"$evidence_path"
+		); then
+			rc=1
+		fi
+		evidence=$(<"$evidence_path") || rc=1
+		case "$mode" in
+		published)
+			printf '%s\n' "$evidence" | jq -e \
+				'.commit == "published" and .open_pr == "clear" and .task == "not-applicable" and .provenance == "profile-publication"' \
+				>/dev/null || rc=1
+			;;
+		unpublished)
+			[[ "$(printf '%s\n' "$evidence" | jq -r '.commit')" == 'unproven' ]] || rc=1
+			;;
+		unavailable)
+			[[ "$(printf '%s\n' "$evidence" | jq -r '.commit')" == "$WORKTREE_RECOVERY_UNAVAILABLE" ]] || rc=1
+			;;
+		esac
+		result=$(_worktree_recovery_plan_classification_json "$identity" \
+			"$(jq -cn --argjson external "$evidence" '{git:"clear",worktree:"clear",registry:"clear",claim:"not-applicable",process:"clear",external:$external}')" true) || rc=1
+		disposition=$(printf '%s\n' "$result" | jq -r '.disposition') || rc=1
+		reason=$(printf '%s\n' "$result" | jq -r '.reasons[0]') || rc=1
+		case "$mode" in
+		published) [[ "$disposition:$reason" == 'candidate:producer-published-detached-evidence-clear' ]] || rc=1 ;;
+		unpublished) [[ "$disposition:$reason" == 'protected:exact-commit-not-published' ]] || rc=1 ;;
+		unavailable) [[ "$disposition:$reason" == 'unknown:required-evidence-unavailable' ]] || rc=1 ;;
+		esac
+	done
+	evidence='{"commit":"published","open_pr":"clear","task":"not-applicable","issue_number":null,"repo":"example/profile","provenance":"profile-publication"}'
+	result=$(_worktree_recovery_plan_classification_json \
+		"$(printf '%s\n' "$identity" | jq -c '.producer_context = "malformed"')" \
+		"$(jq -cn --argjson external "$evidence" '{git:"clear",worktree:"clear",registry:"clear",claim:"not-applicable",process:"clear",external:$external}')" true) || rc=1
+	[[ "$(printf '%s\n' "$result" | jq -r '.reasons[0]')" == 'detached-or-unresolved-branch' ]] || rc=1
+	result=$(_worktree_recovery_plan_classification_json "$identity" \
+		"$(jq -cn --argjson external "$evidence" '{git:"clear",worktree:"clear",registry:"clear",claim:"not-applicable",process:"active",external:$external}')" true) || rc=1
+	[[ "$(printf '%s\n' "$result" | jq -r '.reasons[0]')" == 'active-process-reference' ]] || rc=1
+	if ! (
+		_worktree_recovery_plan_git_state() { printf 'clear\n'; }
+		_worktree_recovery_plan_worktree_reference_state() { printf 'clear\n'; }
+		_worktree_recovery_plan_registry_state() { printf 'clear\n'; }
+		_worktree_recovery_plan_claim_state() { printf 'not-applicable\n'; }
+		_worktree_recovery_plan_process_state() { printf 'clear\n'; }
+		_worktree_recovery_plan_external_evidence_json() {
+			printf '%s\n' '{"commit":"published","open_pr":"clear","task":"not-applicable","issue_number":null,"repo":"example/profile","provenance":"profile-publication"}'
+		}
+		_worktree_recovery_plan_evidence_json "$identity" >"$evidence_path"
+	); then
+		rc=1
+	fi
+	evidence=$(<"$evidence_path") || rc=1
+	[[ "$(printf '%s\n' "$evidence" | jq -r '.claim')" == 'not-applicable' ]] || rc=1
+	[[ "$(printf '%s\n' "$evidence" | jq -r '.external.commit')" == 'published' ]] || rc=1
+	print_result "profile_publication_detached_evidence_is_exact_and_fail_closed" "$rc" \
+		"Expected producer-bound publication proof while malformed, live, unavailable, or unpublished archives remain preserved"
+	return 0
+}
+
+test_profile_publication_detached_archive_plans_without_apply() {
+	local home_path="${TEST_DIR}/profile-plan-home"
+	local repo_path="${TEST_DIR}/profile-plan-repo"
+	local worktree_path="${TEST_DIR}/profile-plan-worktree"
+	local dirty_worktree_path="${TEST_DIR}/profile-plan-dirty-worktree"
+	local recovery_root="${home_path}/recovery"
+	local plan_path="${TEST_DIR}/profile-plan.json"
+	local archive_path='' dirty_archive_path='' rc=0
+
+	mkdir -p "$home_path" "$recovery_root" || rc=1
+	"$GIT_BIN" init -q -b main "$repo_path" || rc=1
+	"$GIT_BIN" -C "$repo_path" config user.email test@example.invalid || rc=1
+	"$GIT_BIN" -C "$repo_path" config user.name 'Aidevops Test' || rc=1
+	"$GIT_BIN" -C "$repo_path" config commit.gpgsign false || rc=1
+	printf 'profile\n' >"${repo_path}/README.md" || rc=1
+	"$GIT_BIN" -C "$repo_path" add README.md || rc=1
+	"$GIT_BIN" -C "$repo_path" commit -q -m init || rc=1
+	"$GIT_BIN" -C "$repo_path" remote add origin 'https://github.com/example/profile.git' || rc=1
+	"$GIT_BIN" -C "$repo_path" worktree add -q --detach "$worktree_path" HEAD || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$worktree_path" 'profile-readme-helper.sh' \
+		'recovery_path=profile-publication-archive profile_scratch=true' || rc=1
+	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" remove_archived_worktree_path \
+		"$worktree_path" "$archive_path" 'profile-readme-helper.sh' 'profile-publication' \
+		'recovery_path=profile-publication-archive profile_scratch=true' 'true' 'true' || rc=1
+	"$GIT_BIN" -C "$repo_path" worktree add -q --detach "$dirty_worktree_path" HEAD || rc=1
+	printf 'unique unpublished data\n' >"${dirty_worktree_path}/unique.bin" || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$dirty_worktree_path" 'profile-readme-helper.sh' \
+		'recovery_path=profile-publication-archive profile_scratch=true' || rc=1
+	dirty_archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" remove_archived_worktree_path \
+		"$dirty_worktree_path" "$dirty_archive_path" 'profile-readme-helper.sh' 'profile-publication' \
+		'recovery_path=profile-publication-archive profile_scratch=true' 'true' 'true' || rc=1
+	if ! (
+		_worktree_recovery_plan_worktree_reference_state() { printf 'clear\n'; }
+		_worktree_recovery_plan_registry_state() { printf 'clear\n'; }
+		_worktree_recovery_plan_process_state() { printf 'clear\n'; }
+		_worktree_recovery_plan_external_evidence_json() {
+			printf '%s\n' '{"commit":"published","open_pr":"clear","task":"not-applicable","issue_number":null,"repo":"example/profile","provenance":"profile-publication"}'
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+			cmd_recovery plan --output "$plan_path" >/dev/null
+	); then
+		rc=1
+	fi
+	jq -e --arg archive "$archive_path" --arg dirty_archive "$dirty_archive_path" '
+		.candidate_count == 1 and .protected_count == 1 and .unknown_count == 0 and
+		(.entries[] | select(.archive_path == $archive) |
+			.identity.producer == "profile-readme-helper.sh" and
+			.identity.producer_context == "recovery_path=profile-publication-archive profile_scratch=true" and
+			.evidence.claim == "not-applicable" and
+			.reasons == ["producer-published-detached-evidence-clear"]) and
+		(.entries[] | select(.archive_path == $dirty_archive) |
+			.disposition == "protected" and .reasons == ["archive-worktree-dirty"])
+	' "$plan_path" >/dev/null || rc=1
+	[[ -d "$archive_path" && -d "$dirty_archive_path" &&
+		! -e "$worktree_path" && ! -e "$dirty_worktree_path" ]] || rc=1
+	print_result "profile_publication_detached_archive_plans_without_apply" "$rc" \
+		"Expected only the clean published archive to become a read-only candidate while unique unpublished data remains protected"
+	return 0
+}
+
 test_plan_output_refuses_unsafe_targets() {
 	local existing_path="${TEST_DIR}/existing-plan.json"
 	local symlink_path="${TEST_DIR}/symlink-plan.json"
@@ -2431,6 +2585,8 @@ run_all_tests() {
 	test_archive_pruning_preserves_tracked_codegraph_root
 	test_claim_state_uses_archive_repository
 	test_detached_claim_does_not_invent_active_owner
+	test_profile_publication_detached_evidence_is_exact_and_fail_closed
+	test_profile_publication_detached_archive_plans_without_apply
 	test_recovery_issue_attribution_uses_archived_source_path
 	test_unlinked_merged_pr_is_terminal_task_evidence
 	test_dirty_recovery_short_circuits_expensive_probes
