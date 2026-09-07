@@ -58,6 +58,27 @@ Skip via bundle config: add gate names to `skip_gates` in the project bundle.
 
 ## Codacy API Patterns (verified working)
 
+### Project-token naming and scale
+
+Treat a repository-scoped token's storage name as part of its scope. Use
+`CODACY_<OWNER>_<REPOSITORY>_PROJECT_TOKEN` (uppercase, with non-alphanumeric
+characters replaced by underscores), for example
+`CODACY_MARCUSQUINN_AIDEVOPS_PROJECT_TOKEN`. This prevents one repository's
+token from silently replacing another as the managed repository set grows.
+
+`CODACY_PROJECT_TOKEN` is Codacy's standard process-level variable and remains a
+compatibility interface for tools that require that exact name; it should not be
+the default persistent identity for multiple repositories. Inject or map only
+the selected repository token into that variable for the lifetime of one
+command. Until aidevops secret injection supports environment-name aliases,
+repository-specific direct API operations should read the scoped secret by its
+exact stored name rather than persisting another generic copy. Never put either
+token value in a command argument, repository file, log, issue, or chat.
+
+Codacy project-token authentication uses the `project-token` HTTP header. The
+older account token uses `api-token`; using the wrong header can look like a
+permission failure even when the token itself is valid.
+
 ```bash
 # Commit delta statistics (new issues count + complexity delta)
 curl -s -H "api-token: $CODACY_API_TOKEN" \
