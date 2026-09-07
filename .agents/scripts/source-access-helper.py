@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -108,6 +109,8 @@ SCHEMA_RECEIPT = _SOURCE_CORE.SCHEMA_RECEIPT
 SCHEMA_MANIFEST_PAYLOAD = _SOURCE_CORE.SCHEMA_MANIFEST_PAYLOAD
 SCHEMA_MANIFEST_RECEIPT = _SOURCE_CORE.SCHEMA_MANIFEST_RECEIPT
 SCHEMA_MANIFEST_REQUEST = _SOURCE_CORE.SCHEMA_MANIFEST_REQUEST
+SCHEMA_BOUND_PAYLOAD = _SOURCE_CORE.SCHEMA_BOUND_PAYLOAD
+SCHEMA_BOUND_RECEIPT = _SOURCE_CORE.SCHEMA_BOUND_RECEIPT
 SCHEMA_TRUST = _SOURCE_CORE.SCHEMA_TRUST
 SIGNATURE_NAMESPACE = _SOURCE_CORE.SIGNATURE_NAMESPACE
 SIGNER_IDENTITY = _SOURCE_CORE.SIGNER_IDENTITY
@@ -470,10 +473,67 @@ def verify_approval(config: Config, spec: VerificationSpec) -> bool:
             return True
         except (OSError, ValueError, TypeError, json.JSONDecodeError, SourceAccessError):
             return _verify_manifest_approval(
-                config, VerificationSpec(session_id, spec.uid, path, reason), checked_at
+                config, VerificationSpec(session_id, spec.uid, path, reason,
+                                         context_socket=spec.context_socket), checked_at
             )
     except (OSError, ValueError, TypeError, json.JSONDecodeError, SourceAccessError):
         return False
+
+
+def _bound_manifest_scope(spec: VerificationSpec, payload: dict[str, Any], paths: list[str]) -> str:
+    """Verify V3 context through the native peer, never a CLI-supplied PID."""
+    proposal = payload.get("proposal")
+    _require_valid_approval(isinstance(proposal, dict))
+    _require_valid_approval(proposal.get("uid") == spec.uid and proposal.get("session_id") == spec.session_id)
+    _require_valid_approval(proposal.get("reason") == spec.reason)
+    recorded = proposal.get("runtime_context")
+    _require_valid_approval(isinstance(recorded, dict) and bool(spec.context_socket))
+    _require_valid_approval(recorded.get("socket_path") == spec.context_socket)
+    _SOURCE_CORE.revalidate_source_proposal_context(proposal, spec.uid)
+    current = _SOURCE_CORE._proposal_source_snapshot(ManifestRequestSpec(
+        spec.session_id, spec.uid, Path.home(), tuple(paths), spec.reason,
+    ))
+    repository = proposal.get("repository")
+    _require_valid_approval(isinstance(repository, dict))
+    _require_valid_approval(isinstance(repository.get("head"), str))
+    _require_valid_approval(re.fullmatch(r"[a-f0-9]{40,64}", repository["head"]) is not None)
+    # As in the Read hook, HEAD is approval-time evidence, not a prohibition on
+    # committing verified edits in the original worktree.
+    for key, value in current["repository"].items():
+        if key != "head":
+            _require_valid_approval(repository.get(key) == value)
+    _require_valid_approval(proposal.get("entries") == current["entries"])
+    return _bound_proposal_id(proposal, payload)
+
+
+def _bound_proposal_id(proposal: dict[str, Any], payload: dict[str, Any]) -> str:
+    nonce = proposal.get("nonce")
+    digest = proposal.get("issue_snapshot_sha256")
+    created = proposal.get("created_at")
+    _require_valid_approval(isinstance(nonce, str) and re.fullmatch(r"[a-f0-9]{32}", nonce) is not None)
+    _require_valid_approval(type(created) is int and created >= 0)
+    _require_valid_approval(type(payload.get("issued_at")) is int and created <= payload["issued_at"])
+    _require_valid_approval(isinstance(digest, str) and re.fullmatch(r"[a-f0-9]{64}", digest) is not None)
+    _require_valid_approval(payload.get("issue_snapshot_sha256") == digest)
+    proposal_id = hashlib.sha256(canonical_json(proposal)).hexdigest()
+    _require_valid_approval(payload.get("proposal_id") == proposal_id)
+    return proposal_id
+
+
+def _legacy_manifest_scope(spec: VerificationSpec, payload: dict[str, Any], paths: list[str]) -> str:
+    return manifest_scope_id(spec.session_id, spec.uid, payload["repo_root"], spec.reason, paths)
+
+
+def _manifest_verification_policy(receipt: dict[str, Any], payload: Any) -> tuple[int, Any]:
+    policies = {
+        SCHEMA_MANIFEST_RECEIPT: (SCHEMA_MANIFEST_PAYLOAD, 2, _legacy_manifest_scope),
+        SCHEMA_BOUND_RECEIPT: (SCHEMA_BOUND_PAYLOAD, 1, _bound_manifest_scope),
+    }
+    policy = policies.get(receipt.get("schema"))
+    _require_valid_approval(policy is not None and isinstance(payload, dict))
+    schema, minimum_entries, identify_scope = policy
+    _require_valid_approval(payload.get("schema") == schema)
+    return minimum_entries, identify_scope
 
 
 def _verify_manifest_approval(
@@ -491,17 +551,16 @@ def _verify_manifest_approval(
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             _require_valid_approval(isinstance(receipt, dict))
             payload = receipt.get("payload")
-            _require_valid_approval(receipt.get("schema") == SCHEMA_MANIFEST_RECEIPT)
-            _require_valid_approval(isinstance(payload, dict))
-            _require_valid_approval(payload.get("schema") == SCHEMA_MANIFEST_PAYLOAD)
+            minimum_entries, identify_scope = _manifest_verification_policy(receipt, payload)
             _require_valid_approval(payload.get("session_id") == spec.session_id)
             _require_valid_approval(payload.get("uid") == spec.uid)
             _require_valid_approval(payload.get("reason") == spec.reason)
             raw_entries = payload.get("entries")
             _require_valid_approval(
                 isinstance(raw_entries, list)
-                and 2 <= len(raw_entries) <= MAX_MANIFEST_ENTRIES
+                and minimum_entries <= len(raw_entries) <= MAX_MANIFEST_ENTRIES
             )
+            _require_valid_approval(all(isinstance(entry, dict) for entry in raw_entries))
             identities = [
                 tracked_source_identity(str(entry.get("path", ""))) for entry in raw_entries
             ]
@@ -519,9 +578,7 @@ def _verify_manifest_approval(
             )
             paths = [entry["path"] for entry in expected_entries]
             _require_valid_approval(len(paths) == len(set(paths)))
-            approval_id = manifest_scope_id(
-                spec.session_id, spec.uid, repo_root, spec.reason, paths
-            )
+            approval_id = identify_scope(spec, payload, paths)
             _require_valid_approval(payload.get("approval_id") == approval_id)
             _require_valid_approval(payload.get("request_id") == approval_id)
             _require_valid_approval(receipt_path.name == f"{approval_id}.json")
@@ -545,7 +602,9 @@ def _verify_manifest_approval(
                     / f"{approval_id}-{entry_id}.source"
                 )
                 _require_valid_approval(raw_entry.get("snapshot_path") == str(snapshot_path))
+                _require_valid_approval(_trusted_directory(snapshot_path.parent, config.trust_uid))
                 _require_valid_approval(_trusted_file(snapshot_path, config.trust_uid))
+                _require_valid_approval(snapshot_path.stat().st_size <= MAX_SOURCE_BYTES)
                 _require_valid_approval(
                     hashlib.sha256(snapshot_path.read_bytes()).hexdigest() == content_sha256
                 )
@@ -565,6 +624,14 @@ def _verify_manifest_approval(
     return False
 
 
+def _snapshot_belongs_to_approval(path: Path, directory: Path, approval_id: str) -> bool:
+    if path.parent != directory:
+        return False
+    return path.name == f"{approval_id}.source" or re.fullmatch(
+        rf"{approval_id}-[a-f0-9]{{32}}\.source", path.name,
+    ) is not None
+
+
 def revoke_approval(config: Config, *, approval_id: str, uid: int) -> None:
     if not ID_PATTERN.fullmatch(approval_id):
         raise SourceAccessError("invalid approval identifier")
@@ -578,7 +645,7 @@ def revoke_approval(config: Config, *, approval_id: str, uid: int) -> None:
     receipt_path.unlink()
     payload = receipt.get("payload", {})
     snapshot_paths = [config.state_dir / "snapshots" / str(uid) / f"{approval_id}.source"]
-    if receipt.get("schema") == SCHEMA_MANIFEST_RECEIPT and isinstance(payload, dict):
+    if receipt.get("schema") in (SCHEMA_MANIFEST_RECEIPT, SCHEMA_BOUND_RECEIPT) and isinstance(payload, dict):
         snapshot_paths = [
             Path(str(entry.get("snapshot_path", "")))
             for entry in payload.get("entries", [])
@@ -587,7 +654,7 @@ def revoke_approval(config: Config, *, approval_id: str, uid: int) -> None:
     expected_snapshot_dir = config.state_dir / "snapshots" / str(uid)
     for snapshot_path in snapshot_paths:
         try:
-            if snapshot_path.parent == expected_snapshot_dir:
+            if _snapshot_belongs_to_approval(snapshot_path, expected_snapshot_dir, approval_id):
                 snapshot_path.unlink()
         except FileNotFoundError:
             pass
@@ -664,6 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--path", required=True)
     verify.add_argument("--reason", required=True)
     verify.add_argument("--quiet", action="store_true")
+    verify.add_argument("--context-socket", default=os.environ.get("AIDEVOPS_SOURCE_CONTEXT_SOCKET", ""))
     revoke = subparsers.add_parser("revoke")
     revoke.add_argument("approval_id")
     subparsers.add_parser("status")
@@ -715,7 +783,7 @@ def _run_approve(args: argparse.Namespace, config: Config, uid: int, home: Path)
 def _run_verify(args: argparse.Namespace, config: Config, uid: int, _home: Path) -> int:
     valid = verify_approval(
         config,
-        VerificationSpec(args.session, uid, args.path, args.reason),
+        VerificationSpec(args.session, uid, args.path, args.reason, context_socket=args.context_socket),
     )
     if valid and not args.quiet:
         print("VERIFIED")

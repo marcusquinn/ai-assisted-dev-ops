@@ -477,6 +477,34 @@ function manifestFixtureProtocol(bound) {
   };
 }
 
+function manifestCliVerifier({ root, stateDir, key, sessionId, now, socketPath }) {
+  const configDir = join(root, "cli-config");
+  mkdirSync(configDir, { mode: 0o700 });
+  writeFileSync(join(configDir, "source-access.pub"), readFileSync(`${key}.pub`), { mode: 0o644 });
+  const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+  const script = 'import runpy,sys,json,os; from pathlib import Path; from unittest.mock import patch; '
+    + 'h=runpy.run_path(sys.argv[1]); '
+    + 'cfg=h["Config"](config_dir=Path(sys.argv[2]),state_dir=Path(sys.argv[3]),trust_uid=os.getuid()); '
+    + 'patch.object(h["time"],"time",return_value=int(sys.argv[4])).start(); '
+    + 'args=h["build_parser"]().parse_args(json.loads(sys.argv[5])); '
+    + 'sys.exit(h["_run_verify"](args,cfg,os.getuid(),Path.home()))';
+  return async (filePath, options = {}) => {
+    const argv = ["verify", "--session", options.sessionId ?? sessionId, "--path", filePath,
+      "--reason", SOURCE_ACCESS_REASON, "--context-socket", options.socketPath ?? socketPath];
+    const { stdout } = await promisify(execFile)("python3", ["-I", "-B", "-c", script,
+      helper, configDir, stateDir, String(options.now ?? now), JSON.stringify(argv)], { timeout: 15000 });
+    assert.equal(stdout.trim(), "VERIFIED");
+  };
+}
+
+function revokeManifestFixture(stateDir, approvalId) {
+  const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+  const script = 'import runpy,sys,os; from pathlib import Path; h=runpy.run_path(sys.argv[1]); '
+    + 'cfg=h["Config"](state_dir=Path(sys.argv[2]),trust_uid=os.getuid()); '
+    + 'h["revoke_approval"](cfg,approval_id=sys.argv[3],uid=os.getuid())';
+  execFileSync("python3", ["-I", "-B", "-c", script, helper, stateDir, approvalId], { timeout: 15000 });
+}
+
 async function checkSignedManifest(inLinkedWorktree, bound = false) {
   const protocol = manifestFixtureProtocol(bound);
   const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
@@ -603,8 +631,10 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
       trustUid: uid,
       stateDir,
       publicKeyPath: `${key}.pub`,
-      sourceContext: bound ? await runtime.resolve(sessionId, repo) : undefined,
+      sourceContext: await runtime?.resolve(sessionId, repo),
     };
+    const verifyCli = manifestCliVerifier({ root, stateDir, key, sessionId, now: now + 1,
+      socketPath: proposal?.runtime_context.socket_path ?? "" });
     const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "scripts");
     const logsDir = join(root, "logs");
     mkdirSync(logsDir);
@@ -620,6 +650,7 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
       },
     });
     for (const filePath of paths) {
+      await verifyCli(filePath);
       const approval = verifySourceAccessReceipt({ ...baseArgs, filePath });
       assert.ok(approval);
       assert.equal(readFileSync(approval.approvedPath, "utf8"), readFileSync(filePath, "utf8"));
@@ -630,6 +661,10 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
     assert.equal(existsSync(join(repo, "fsmonitor-ran")), false, "source verification must not execute repository commands");
     assert.equal(existsSync(join(canonicalRepo, "fsmonitor-ran")), false, "runtime queries must not execute repository commands");
     if (bound) {
+      await assert.rejects(verifyCli(paths[0], { socketPath: "" }));
+      await assert.rejects(verifyCli(paths[0], { sessionId: "ses_other_manifest" }));
+      await assert.rejects(verifyCli(paths[0], { now: now + 3600 }));
+      await assert.rejects(verifyCli(extraPath));
       for (const [field, value] of [["runtime_instance_id", "f".repeat(32)], ["runtime_pid", process.pid + 1],
         ["session_created_at", 2000], ["project_id", "other"]]) {
         assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0],
@@ -637,6 +672,7 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
       }
       assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0], sourceContext: undefined }), false);
       session.time.created = 2000;
+      await assert.rejects(verifyCli(paths[0]));
       await assert.rejects(hooks.toolExecuteBefore({ tool: "read", sessionID: sessionId, callID: "new-generation" },
         { args: { filePath: paths[0] } }), /secret-read-guard/);
       const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
@@ -698,7 +734,10 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
     writeFileSync(paths[1], "altered\n");
     assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }), false);
     writeFileSync(paths[1], "source-1\n");
-    rmSync(receiptPath);
+    revokeManifestFixture(stateDir, approvalId);
+    assert.equal(existsSync(receiptPath), false);
+    assert.ok(entries.every((entry) => !existsSync(entry.snapshot_path)));
+    await assert.rejects(verifyCli(paths[0]));
     assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }), false);
   } finally {
     runtime?.close();

@@ -139,6 +139,32 @@ class SourceAccessHelperTests(unittest.TestCase):
                     core._run(command)
             run.assert_not_called()
 
+    def test_v3_status_and_revoke_preserve_other_grants(self) -> None:
+        approval_id = "a" * 64
+        snapshot_dir = self.config.state_dir / "snapshots" / str(self.uid)
+        receipt_dir = self.config.state_dir / "approvals" / str(self.uid)
+        snapshot_dir.mkdir(parents=True)
+        receipt_dir.mkdir(parents=True)
+        own = snapshot_dir / f"{approval_id}-{'b' * 32}.source"
+        other = snapshot_dir / f"{'c' * 64}-{'d' * 32}.source"
+        own.write_text("approved fixture", encoding="utf-8")
+        other.write_text("other grant", encoding="utf-8")
+        # Even malformed receipt metadata cannot revoke another grant's snapshot.
+        receipt = {"schema": HELPER.SCHEMA_BOUND_RECEIPT, "payload": {
+            "schema": HELPER.SCHEMA_BOUND_PAYLOAD, "approval_id": approval_id,
+            "session_id": self.session, "repo_root": str(self.repo),
+            "expires_at": self.now + 3600,
+            "entries": [{"snapshot_path": str(own)}, {"snapshot_path": str(other)}],
+        }}
+        record = receipt_dir / f"{approval_id}.json"
+        record.write_text(json.dumps(receipt), encoding="utf-8")
+        self.assertEqual(HELPER.list_approvals(self.config, uid=self.uid, now=self.now)[0]["approval_id"], approval_id)
+        HELPER.revoke_approval(self.config, approval_id=approval_id, uid=self.uid)
+        self.assertFalse(record.exists())
+        self.assertFalse(own.exists())
+        self.assertEqual(other.read_text(encoding="utf-8"), "other grant")
+        self.assertEqual(HELPER.list_approvals(self.config, uid=self.uid, now=self.now), [])
+
     def test_proposals_remain_powerless_after_delayed_attendance(self) -> None:
         core = HELPER._SOURCE_CORE
         spec = self._proposal_spec()

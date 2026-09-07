@@ -30,6 +30,8 @@ SCHEMA_RECEIPT = "aidevops-source-access-receipt/v1"
 SCHEMA_MANIFEST_RECEIPT = "aidevops-source-access-receipt/v2"
 SCHEMA_PAYLOAD = "aidevops-source-access-approval/v1"
 SCHEMA_MANIFEST_PAYLOAD = "aidevops-source-access-approval/v2"
+SCHEMA_BOUND_PAYLOAD = "aidevops-source-access-approval/v3"
+SCHEMA_BOUND_RECEIPT = "aidevops-source-access-receipt/v3"
 SCHEMA_TRUST = "aidevops-source-access-trust/v1"
 SIGNATURE_NAMESPACE = "aidevops-source-access-v1"
 SIGNER_IDENTITY = "source-access@aidevops.sh"
@@ -121,6 +123,7 @@ class VerificationSpec:
     path: str
     reason: str
     now: int | None = None
+    context_socket: str = ""
 
 
 @dataclass(frozen=True)
@@ -985,6 +988,7 @@ def _manifest_approval_path(payload: dict[str, Any]) -> str:
 _APPROVAL_PATH_READERS = {
     SCHEMA_PAYLOAD: _single_approval_path,
     SCHEMA_MANIFEST_PAYLOAD: _manifest_approval_path,
+    SCHEMA_BOUND_PAYLOAD: _manifest_approval_path,
 }
 
 
