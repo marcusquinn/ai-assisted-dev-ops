@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.331] - 2026-09-07
+
+### Changed
+
+- Documentation: Update README hero headline typography
+- Maintenance: aggregate exact-tip release sources
+- Performance: reduce operation-output and helper-discovery round trips (t18410)
+- Maintenance: decompose Codacy recovery parent task
+
+### Fixed
+
+- Validate indented completion bookkeeping rows
+- distinguish pulse ownership from explicit holds
+- reclaim abandoned profile publication worktrees
+
 ## [3.32.330] - 2026-09-07
 
 ### Changed
