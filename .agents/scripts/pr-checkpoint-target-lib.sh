@@ -49,7 +49,7 @@ _pr_checkpoint_revised_target() {
 		"$linked_issue" "" "" "$(jq -r '.runner' <<<"$approval")" || return 1
 	# The revision validator above authorizes the original owner or an unassigned
 	# issue before this claim transfers ownership to the successor.
-	_pr_checkpoint_issue_metadata_is_eligible "$normalized_issue" "$linked_issue" "" "[]" "" "true" || return 1
+	_pr_checkpoint_issue_metadata_is_eligible "$normalized_issue" "$linked_issue" "" "[]" "" true || return 1
 	printf '%s\n' "$approval"
 	return 0
 }

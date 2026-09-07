@@ -308,7 +308,7 @@ aidevops_gh_slurp_status_message() {
 			"$AIDEVOPS_GH_MIN_SLURP_VERSION" "$(aidevops_gh_slurp_remediation_guidance)"
 		return 0
 	fi
-	installed=$(aidevops_gh_installed_version) || installed="unknown"
+	installed=$(aidevops_gh_installed_version) || installed='unknown'
 	if [[ "$installed" == "unknown" ]]; then
 		printf 'GitHub CLI (gh) version could not be parsed; gh api --paginate --slurp requires gh >= %s; gh --version output is malformed or empty. %s' \
 			"$AIDEVOPS_GH_MIN_SLURP_VERSION" "$(aidevops_gh_slurp_remediation_guidance "$installed")"

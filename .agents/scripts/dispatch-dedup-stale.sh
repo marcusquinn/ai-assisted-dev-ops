@@ -872,10 +872,11 @@ _stale_assignment_has_live_interactive_claim() {
 		return 1
 	fi
 
-	printf '%s' "$issue_meta_json" | jq -e --arg claimant "$claim_author" '
+	printf '%s' "$issue_meta_json" | jq -e --arg claimant "$claim_author" \
+		--arg in_progress 'status:in-progress' '
 		(.state | ascii_downcase) == "open" and
 		([.labels[]?.name] | any(. == "status:claimed" or
-			. == "status:in-progress" or . == "status:in-review")) and
+			. == $in_progress or . == "status:in-review")) and
 		([.assignees[]?.login] | index($claimant) != null)
 	' >/dev/null 2>&1 || return 1
 	return 0
