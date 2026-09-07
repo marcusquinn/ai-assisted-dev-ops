@@ -163,7 +163,7 @@ def _summarise_with_ollama(plain_text, subject):
     try:
         # _validated_ollama_api_url restricts this configurable target to an
         # HTTP(S) URL with an authority before the request is constructed.
-        with urllib.request.urlopen(req, timeout=30) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected,python_urlopen_rule-urllib-urlopen
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected,python_urlopen_rule-urllib-urlopen
             data = json.loads(resp.read().decode('utf-8'))
             summary = data.get('response', '').strip()
             if summary:
