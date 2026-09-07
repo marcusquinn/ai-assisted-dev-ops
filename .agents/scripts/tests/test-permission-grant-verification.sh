@@ -77,6 +77,20 @@ cat >"${TEST_ROOT}/bin/gh" <<'STUB'
 set -euo pipefail
 args="$*"
 if [[ "$args" == *"/events?"* ]]; then
+	printf 'event\n' >>"$PERMISSION_GH_CALLS_FILE"
+	call_count=$(wc -l <"$PERMISSION_GH_CALLS_FILE" | tr -d ' ')
+	case "${PERMISSION_GH_MODE:-success}" in
+	events-fail-first)
+		[[ "$call_count" -gt 1 ]] || exit 75
+		;;
+	events-always-fail)
+		exit 75
+		;;
+	events-malformed)
+		printf '{malformed\n'
+		exit 0
+		;;
+	esac
   command cat "$PERMISSION_EVENTS_FILE"
 else
   command cat "$PERMISSION_COMMENTS_FILE"
@@ -86,6 +100,8 @@ chmod +x "${TEST_ROOT}/bin/gh"
 export PATH="${TEST_ROOT}/bin:${PATH}"
 export PERMISSION_COMMENTS_FILE="$comments_file"
 export PERMISSION_EVENTS_FILE="$events_file"
+export PERMISSION_GH_CALLS_FILE="${TEST_ROOT}/gh-calls"
+export AIDEVOPS_PERMISSION_HISTORY_RETRY_DELAY=0
 
 verification=$(cmd_verify_permissions issue 123 owner/repo)
 [[ "$verification" == "VERIFIED" ]] || {
@@ -95,6 +111,33 @@ verification=$(cmd_verify_permissions issue 123 owner/repo)
 
 # shellcheck source=../pulse-dispatch-core.sh
 source "${SCRIPT_DIR}/pulse-dispatch-core.sh"
+
+: >"$PERMISSION_GH_CALLS_FILE"
+export PERMISSION_GH_MODE="events-fail-first"
+if _dispatch_permission_history_requires_grant 123 owner/repo; then
+	printf 'dispatch remained blocked after a transient permission-history failure: %s\n' "${_DISPATCH_PERMISSION_VERIFY_RESULT:-}" >&2
+	exit 1
+fi
+[[ "$_DISPATCH_PERMISSION_VERIFY_RESULT" == "VERIFIED" ]]
+[[ "$(wc -l <"$PERMISSION_GH_CALLS_FILE" | tr -d ' ')" == "2" ]]
+
+: >"$PERMISSION_GH_CALLS_FILE"
+export PERMISSION_GH_MODE="events-always-fail"
+if ! _dispatch_permission_history_requires_grant 123 owner/repo; then
+	printf 'dispatch was allowed after repeated permission-history failures\n' >&2
+	exit 1
+fi
+[[ "$_DISPATCH_PERMISSION_VERIFY_RESULT" == "API_ERROR" ]]
+[[ "$(wc -l <"$PERMISSION_GH_CALLS_FILE" | tr -d ' ')" == "2" ]]
+
+export PERMISSION_GH_MODE="events-malformed"
+if ! _dispatch_permission_history_requires_grant 123 owner/repo; then
+	printf 'dispatch was allowed after malformed permission-history data\n' >&2
+	exit 1
+fi
+[[ "$_DISPATCH_PERMISSION_VERIFY_RESULT" == "API_ERROR" ]]
+
+export PERMISSION_GH_MODE="success"
 if _dispatch_permission_history_requires_grant 123 owner/repo; then
 	printf 'dispatch remained blocked despite a matching valid grant: %s\n' "${_DISPATCH_PERMISSION_VERIFY_RESULT:-}" >&2
 	exit 1

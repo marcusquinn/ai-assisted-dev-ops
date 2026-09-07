@@ -109,6 +109,37 @@ fi
 # adapter must never take that route away from an explicitly metered window.
 # shellcheck source=/dev/null
 source "${TMP}/scripts/gh-transport-controls.sh"
+
+_governor_count_file="${TMP}/governor/calls"
+printf '0\n' >"$_governor_count_file"
+python3() {
+	if [[ "${1:-}" == *gh-transport-governor.py ]]; then
+		local governor_calls=""
+		governor_calls=$(<"$_governor_count_file")
+		governor_calls=$((governor_calls + 1))
+		printf '%s\n' "$governor_calls" >"$_governor_count_file"
+		local metadata="$2"
+		if [[ "$governor_calls" -eq 1 ]]; then
+			printf '{"attempted":false,"deferred_by":"local_admission","retry_at":1}\n' >"$metadata"
+			return 75
+		fi
+		printf '{"attempted":true,"status":200,"resource":"core","remaining":4999,"reset":%s,"retry_after":null,"cost":1}\n' "$_governor_reset" >"$metadata"
+		printf '{"fixture":true}\n'
+		return 0
+	fi
+	command python3 "$@"
+}
+_governor_rc=0
+_governor_output=$(AIDEVOPS_GH_LOCAL_ADMISSION_RETRY_DELAY_SECONDS=0 \
+	_gh_transport_run_rest "${TMP}/bin/gh" rest gh_api_rest 0 api user 2>/dev/null) || _governor_rc=$?
+unset -f python3
+_governor_calls=$(<"$_governor_count_file")
+if [[ "$_governor_calls" -eq 2 && "$_governor_output" == '{"fixture":true}' ]]; then
+	_pass "local admission deferral retries once only after attempted=false evidence"
+else
+	_fail "local admission deferral was not retried safely (rc=${_governor_rc} calls=${_governor_calls} output=${_governor_output:-<empty>})"
+fi
+
 _governor_rc=0
 AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 _gh_transport_run_rest \
 	"${TMP}/bin/gh" rest gh_api_rest 0 api user >/dev/null 2>/dev/null || _governor_rc=$?

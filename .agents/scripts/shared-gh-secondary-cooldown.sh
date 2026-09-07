@@ -790,6 +790,7 @@ _gh_secondary_cooldown_status() {
 
 _gh_secondary_cooldown_header_expires_at() {
 	local response_text="$1"
+	local body_classification="${2:-}"
 	local now=""
 	local retry_after=""
 	local reset_at=""
@@ -800,11 +801,16 @@ _gh_secondary_cooldown_header_expires_at() {
 		printf '%s' $((now + retry_after))
 		return 0
 	fi
-	reset_at="$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-reset")"
-	if [[ "$reset_at" =~ ^[0-9]+$ && "$reset_at" -gt "$now" ]]; then
-		printf '%s' "$reset_at"
-		return 0
-	fi
+	case "$body_classification" in
+	secondary-rate-limit | abuse-detection) ;;
+	*)
+		reset_at="$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-reset")"
+		if [[ "$reset_at" =~ ^[0-9]+$ && "$reset_at" -gt "$now" ]]; then
+			printf '%s' "$reset_at"
+			return 0
+		fi
+		;;
+	esac
 	printf '%s' $((now + AIDEVOPS_GH_SECONDARY_COOLDOWN_SECS))
 	return 0
 }
@@ -873,7 +879,7 @@ _gh_secondary_cooldown_record_response_if_needed() {
 			_gh_secondary_cooldown_record_event "diagnostic-only" "github-api-forbidden-status-403" "status-403-diagnostic-only" "$response_text" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg"
 			return 0
 		fi
-		expires_at="$(_gh_secondary_cooldown_header_expires_at "$response_text")"
+		expires_at="$(_gh_secondary_cooldown_header_expires_at "$response_text" "$body_classification")"
 		if [[ -z "$retry_after" ]] && ! [[ "$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-reset")" =~ ^[0-9]+$ ]]; then
 			expires_at="$(_gh_secondary_cooldown_rest_reset_at "$endpoint_arg" || printf '%s' "$expires_at")"
 		fi
@@ -881,7 +887,7 @@ _gh_secondary_cooldown_record_response_if_needed() {
 		return 0
 		;;
 	429)
-		expires_at="$(_gh_secondary_cooldown_header_expires_at "$response_text")"
+		expires_at="$(_gh_secondary_cooldown_header_expires_at "$response_text" "$body_classification")"
 		if [[ -z "$retry_after" ]] && ! [[ "$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-reset")" =~ ^[0-9]+$ ]]; then
 			expires_at="$(_gh_secondary_cooldown_rest_reset_at "$endpoint_arg" || printf '%s' "$expires_at")"
 		fi

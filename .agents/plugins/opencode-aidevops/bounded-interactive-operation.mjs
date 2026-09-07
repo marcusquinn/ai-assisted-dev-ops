@@ -21,6 +21,7 @@ import {
   signalSupervisor,
   trimTerminalOperations,
 } from "./bounded-operation-runtime.mjs";
+import { resolveSessionOwnedWorktreeRoot } from "./gpt-image-worktree.mjs";
 
 const MAX_OPERATIONS = 24;
 const SUPERVISOR_PATH = fileURLToPath(new URL("./bounded-operation-supervisor.mjs", import.meta.url));
@@ -29,6 +30,8 @@ const SUPERVISOR_RUNTIME = "node";
 export class BoundedInteractiveOperationManager {
   constructor(options = {}) {
     this.projectRoot = realpathSync(options.projectRoot || process.cwd());
+    this.scriptsDir = options.scriptsDir;
+    this.worktreeResolver = options.resolveWorktreeRoot || resolveSessionOwnedWorktreeRoot;
     this.spawn = options.spawn || spawn;
     this.now = options.now || Date.now;
     this.makeID = options.makeID || (() => `op_${this.now()}_${randomBytes(6).toString("hex")}`);
@@ -41,10 +44,15 @@ export class BoundedInteractiveOperationManager {
     this.operations = new Map();
   }
 
-  resolveCwd(requested) {
+  async resolveCwd(requested, context) {
     const cwd = realpathSync(requested || this.projectRoot);
-    if (!withinRoot(cwd, this.projectRoot)) throw new Error("cwd must remain inside the active project root");
-    return cwd;
+    if (withinRoot(cwd, this.projectRoot)) return cwd;
+    const resolved = await this.worktreeResolver(cwd, this.projectRoot, context, {
+      allowStartupRoot: true,
+      scriptsDir: this.scriptsDir,
+      subject: "Operation",
+    });
+    return resolved.root;
   }
 
   trimTerminalOperations() {
@@ -99,7 +107,7 @@ export class BoundedInteractiveOperationManager {
     const operation = {
       id: this.makeID(),
       owner,
-      cwd: this.resolveCwd(args.cwd),
+      cwd: await this.resolveCwd(args.cwd, context),
       command: [...args.command],
       restorationCommand: args.restorationCommand ? [...args.restorationCommand] : null,
       budgetMs: boundedInteger(args.budgetMs, 15 * 60 * 1000, 10, 24 * 60 * 60 * 1000),

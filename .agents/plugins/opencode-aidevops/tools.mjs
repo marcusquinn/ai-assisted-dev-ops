@@ -224,6 +224,7 @@ export function createTools(scriptsDir, run, options = {}) {
   if (options.sessionOrigin === "triage") return {};
   const boundedOperationManager = options.boundedOperationManager || new BoundedInteractiveOperationManager({
     projectRoot: options.projectRoot || process.cwd(),
+    scriptsDir,
     recordOutput: createOutputSandboxRecorder(join(scriptsDir, "output-sandbox-helper.sh")),
   });
 

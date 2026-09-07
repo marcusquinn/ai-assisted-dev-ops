@@ -365,6 +365,20 @@ test_header_parsers_ignore_response_body() {
 	return 1
 }
 
+test_explicit_secondary_ignores_primary_resource_reset() {
+	reset_case
+	local now="" response_text="" expiry=""
+	now="$(_gh_secondary_cooldown_now)"
+	response_text=$(printf 'HTTP/2 403\r\nX-RateLimit-Resource: search\r\nX-RateLimit-Remaining: 27\r\nX-RateLimit-Reset: %s\r\n\r\n' "$((now + 56))")
+	expiry="$(_gh_secondary_cooldown_header_expires_at "$response_text" "secondary-rate-limit")"
+	if [[ "$expiry" -eq $((now + AIDEVOPS_GH_SECONDARY_COOLDOWN_SECS)) ]]; then
+		printf 'PASS explicit secondary response ignores primary resource reset\n'
+		return 0
+	fi
+	printf 'FAIL explicit secondary response used primary reset: expiry=%s now=%s\n' "$expiry" "$now"
+	return 1
+}
+
 test_timeout_temp_cleanup_when_out_mktemp_fails() {
 	reset_case
 	local leaked_file="${TMP_HOME}/leaked.err"
@@ -558,6 +572,7 @@ test_override_allows_audited_call
 test_default_path_without_home_is_user_scoped
 test_no_jq_fallback_escapes_json_strings
 test_header_parsers_ignore_response_body
+test_explicit_secondary_ignores_primary_resource_reset
 test_timeout_temp_cleanup_when_out_mktemp_fails
 test_event_trim_enforces_bytes_below_line_cap
 test_boot_ramp_defers_after_per_minute_budget

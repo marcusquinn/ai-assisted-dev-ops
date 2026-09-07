@@ -18,10 +18,12 @@ TESTS_RUN=0
 TESTS_FAILED=0
 OWNER_PID=""
 CLAIM_PID=""
+LOCK_PID=""
 
 cleanup() {
 	[[ -n "$OWNER_PID" ]] && kill "$OWNER_PID" >/dev/null 2>&1 || true
 	[[ -n "$CLAIM_PID" ]] && kill "$CLAIM_PID" >/dev/null 2>&1 || true
+	[[ -n "$LOCK_PID" ]] && kill "$LOCK_PID" >/dev/null 2>&1 || true
 	wait "$OWNER_PID" "$CLAIM_PID" 2>/dev/null || true
 	rm -rf "$TEST_ROOT"
 	return 0
@@ -107,6 +109,43 @@ test_registry_owner_verification_command() {
 		rc=1
 	fi
 	print_result "registry command verifies exact live session owner" "$rc"
+	return 0
+}
+
+test_registry_sqlite_contention_is_bounded() {
+	reset_registry
+	_init_registry_db || {
+		print_result "registry SQLite contention waits boundedly" 1
+		return 0
+	}
+	local lock_sql="${TEST_ROOT}/hold-registry-lock.sql"
+	printf '%s\n' \
+		'BEGIN EXCLUSIVE;' \
+		"INSERT OR REPLACE INTO worktree_owners (worktree_path, branch, owner_pid) VALUES ('/tmp/lock-holder', 'lock-holder', 1);" \
+		'.shell sleep 2' \
+		'COMMIT;' >"$lock_sql"
+	command sqlite3 "$WORKTREE_REGISTRY_DB" <"$lock_sql" &
+	LOCK_PID=$!
+	sleep 1
+
+	local rc=0 started_at=$SECONDS elapsed=0
+	if AIDEVOPS_WORKTREE_REGISTRY_BUSY_TIMEOUT_MS=100 \
+		_wt_sqlite3 "$WORKTREE_REGISTRY_DB" \
+		"INSERT OR REPLACE INTO worktree_owners (worktree_path, branch, owner_pid) VALUES ('/tmp/bounded-writer', 'bounded-writer', 2);" \
+		>/dev/null 2>&1; then
+		rc=1
+	fi
+	elapsed=$((SECONDS - started_at))
+	[[ "$elapsed" -lt 2 ]] || rc=1
+	wait "$LOCK_PID" || rc=1
+	LOCK_PID=""
+
+	AIDEVOPS_WORKTREE_REGISTRY_BUSY_TIMEOUT_MS=1000 \
+		_wt_sqlite3 "$WORKTREE_REGISTRY_DB" \
+		"INSERT OR REPLACE INTO worktree_owners (worktree_path, branch, owner_pid) VALUES ('/tmp/bounded-writer', 'bounded-writer', 2);" \
+		>/dev/null 2>&1 || rc=1
+	[[ "$(_wt_sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT COUNT(*) FROM worktree_owners WHERE worktree_path = '/tmp/bounded-writer';")" == "1" ]] || rc=1
+	print_result "registry SQLite contention waits boundedly" "$rc"
 	return 0
 }
 
@@ -508,6 +547,7 @@ test_owner_writers_fail_when_process_generation_is_unavailable() {
 
 main() {
 	start_live_pids
+	test_registry_sqlite_contention_is_bounded
 	test_registry_owner_verification_command
 	test_same_opencode_session_rolls_owner_pid
 	test_parameterized_claim_preserves_metacharacters
