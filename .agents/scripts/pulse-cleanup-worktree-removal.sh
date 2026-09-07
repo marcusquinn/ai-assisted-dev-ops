@@ -303,6 +303,87 @@ _pc_generated_dirty_archive_secs() {
 	return 0
 }
 
+_pc_profile_publication_archive_secs() {
+	local archive_secs="${ORPHAN_PROFILE_PUBLICATION_ARCHIVE_SECS:-7200}"
+	archive_secs="${archive_secs//[!0-9]/}"
+	if [[ -z "$archive_secs" || "$archive_secs" -lt 1800 ]]; then
+		archive_secs=7200
+	fi
+	printf '%s\n' "$archive_secs"
+	return 0
+}
+
+_pc_profile_publication_marker_valid() {
+	local rp_age="$1"
+	local wt_path_age="$2"
+	local wt_name=""
+	local resolved_path=""
+	local git_dir=""
+	local marker_path=""
+	local repo_common_dir=""
+	local worktree_common_dir=""
+	local marker_values=""
+	local marker_path_value=""
+	local marker_common_dir=""
+
+	wt_name=$(basename "$wt_path_age")
+	[[ "$wt_name" == "$(basename "$rp_age")-profile-readme-"* ]] || return 1
+	git -C "$wt_path_age" symbolic-ref -q HEAD >/dev/null 2>&1 && return 1
+	resolved_path=$(cd "$wt_path_age" 2>/dev/null && pwd -P) || return 1
+	git_dir=$(git -C "$wt_path_age" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
+	marker_path="${git_dir}/aidevops-profile-publication.json"
+	[[ -f "$marker_path" ]] || return 1
+	repo_common_dir=$(git -C "$rp_age" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+	worktree_common_dir=$(git -C "$wt_path_age" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+	[[ "$repo_common_dir" == "$worktree_common_dir" ]] || return 1
+	marker_values=$(jq -er '
+		select(.schema == "aidevops-profile-publication/v1")
+		| select(.producer == "profile-readme")
+		| select(.created_epoch | type == "number" and . > 0)
+		| select(.canonical_head | type == "string" and test("^[0-9a-f]{40,64}$"))
+		| [.worktree_path, .canonical_common_dir] | @tsv
+	' "$marker_path" 2>/dev/null) || return 1
+	IFS=$'\t' read -r marker_path_value marker_common_dir <<<"$marker_values"
+	[[ "$marker_path_value" == "$resolved_path" && "$marker_common_dir" == "$repo_common_dir" ]] || return 1
+	return 0
+}
+
+_pc_handle_abandoned_profile_publication() {
+	local rp_age="$1"
+	local wt_path_age="$2"
+	local wt_branch_age="$3"
+	local commits_ahead="$4"
+	local dirty_count="$5"
+	local wt_age_secs="$6"
+	local repo_name_age="$7"
+	local archive_secs=""
+	local archive_path=""
+	local audit_context=""
+	local context=""
+	local guard_ok=""
+
+	[[ -z "$wt_branch_age" ]] || return 1
+	_pc_profile_publication_marker_valid "$rp_age" "$wt_path_age" || return 1
+	[[ "$commits_ahead" -eq 0 ]] || return 1
+	archive_secs=$(_pc_profile_publication_archive_secs)
+	[[ "$wt_age_secs" -ge "$archive_secs" ]] || return 1
+	guard_ok=$(printf 'cle%s' 'ar')
+	context="recovery_path=profile-publication-orphan profile_scratch=true"
+	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "" "$commits_ahead" "$dirty_count" "$wt_age_secs" "abandoned-profile-publication" "$guard_ok" "$guard_ok" "$guard_ok" "recoverable-archive")
+	echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): archiving detached profile publication worktree older than ${archive_secs}s" >>"$LOGFILE"
+	archive_worktree_path_recoverably "$wt_path_age" "$_WTAR_PC_CALLER" "$context" || return "$_PC_ARCHIVE_REQUIRED_FAILURE_RC"
+	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	[[ -n "$archive_path" ]] || return "$_PC_ARCHIVE_REQUIRED_FAILURE_RC"
+	_pc_profile_publication_marker_valid "$rp_age" "$wt_path_age" || return "$_PC_ARCHIVE_REQUIRED_FAILURE_RC"
+	remove_archived_worktree_path "$wt_path_age" "$archive_path" "$_WTAR_PC_CALLER" \
+		"profile-publication" "$context" "true" "true" || return "$_PC_ARCHIVE_REQUIRED_FAILURE_RC"
+	git -C "$rp_age" worktree prune 2>/dev/null || true
+	unregister_worktree "$wt_path_age" 2>/dev/null || true
+	log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" \
+		"profile-publication" "recoverable" "${audit_context} archive_path=${archive_path}"
+	return 0
+}
+
 #######################################
 # Check whether a worktree path or branch is generated worker/review cruft.
 #
@@ -725,6 +806,11 @@ _cleanup_single_worktree() {
 	if _worktree_owner_alive "$wt_path_age" "$wt_branch_age"; then
 		return 1
 	fi
+	if _pc_handle_abandoned_profile_publication "$rp_age" "$wt_path_age" "$wt_branch_age" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$repo_name_age"; then
+		return 0
+	elif [[ "$?" -eq "$_PC_ARCHIVE_REQUIRED_FAILURE_RC" ]]; then
+		return 1
+	fi
 	if _pc_skip_recent_worker_metric_cleanup "$wt_path_age" "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$now_epoch" "$repo_name_age"; then
 		return 1
 	fi
@@ -740,12 +826,11 @@ _cleanup_single_worktree() {
 	"$_PC_ARCHIVE_REQUIRED_FAILURE_RC" | "$_PC_ARCHIVE_HANDLED_SKIP_RC") return 1 ;;
 	esac
 
-	local audit_context
+	local audit_context reason
 	local guard_ok
 	guard_ok=$(printf 'cle%s' 'ar')
 	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "$guard_ok" "$_PC_REMOVAL_NONE")
 
-	local reason
 	if ! reason=$(_evaluate_worktree_removal "$commits_ahead" "$dirty_count" "$wt_age_secs" "$wt_branch_age" "$repo_slug_age"); then
 		_pc_log_not_age_eligible_skip "$wt_path_age" "$wt_branch_age" "$commits_ahead" "$dirty_count" "$wt_age_secs" "not-eligible"
 		return 1
@@ -1018,7 +1103,10 @@ _pc_cleanup_orphan_sibling_dirs() {
 	local repos_json="$1"
 	local now_epoch="$2"
 	local moved_count=0
-	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || { echo 0; return 0; }
+	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || {
+		echo 0
+		return 0
+	}
 
 	local repo_records_orphan
 	repo_records_orphan=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | [(.path // ""), (.slug // "")] | @tsv' "$repos_json" 2>/dev/null || printf '')
@@ -1155,7 +1243,10 @@ _pc_relocate_registered_worktree() {
 _pc_relocate_registered_worktrees() {
 	local repos_json="$1"
 	local moved_count=0
-	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || { echo 0; return 0; }
+	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || {
+		echo 0
+		return 0
+	}
 
 	local central_base=""
 	if declare -F aidevops_worktree_base_dir >/dev/null 2>&1; then
@@ -1164,7 +1255,10 @@ _pc_relocate_registered_worktrees() {
 		central_base=$(aidevops_worktree_base_dir_configured 2>/dev/null || true)
 		[[ -n "$central_base" ]] && mkdir -p "$central_base" 2>/dev/null || true
 	fi
-	[[ -n "$central_base" && -d "$central_base" ]] || { echo 0; return 0; }
+	[[ -n "$central_base" && -d "$central_base" ]] || {
+		echo 0
+		return 0
+	}
 
 	local repo_paths_move
 	repo_paths_move=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | .path // ""' "$repos_json" 2>/dev/null || printf '')

@@ -35,6 +35,7 @@ PROFILE_UPDATE_LOCK_TOKEN=""
 PROFILE_UPDATE_LOCK_GRACE_SECONDS="${AIDEVOPS_PROFILE_LOCK_GRACE_SECONDS:-30}"
 PROFILE_PUBLICATION_WORKTREE=""
 PROFILE_PUBLICATION_CANONICAL_REPO=""
+PROFILE_PUBLICATION_REGISTRY_TASK="profile-readme"
 PROFILE_CONTRIBUTIONS_REFRESHED=false
 
 # --- Serialize profile refreshes so scheduler overlap cannot duplicate scans/writes ---
@@ -138,8 +139,68 @@ _profile_publication_worktree_helper() {
 	return 0
 }
 
+_profile_publication_registry_update() {
+	local operation="$1"
+	local worktree_path="$2"
+	local owner_pid="${3:-}"
+	local owner_session="${4:-}"
+
+	(
+		# shellcheck source=shared-constants.sh
+		source "${SCRIPT_DIR}/shared-constants.sh" || exit 1
+		case "$operation" in
+		register)
+			register_worktree "$worktree_path" "" --task "$PROFILE_PUBLICATION_REGISTRY_TASK" \
+				--session "$owner_session" --owner-pid "$owner_pid"
+			;;
+		unregister) unregister_worktree "$worktree_path" ;;
+		*) exit 1 ;;
+		esac
+	)
+}
+
+_profile_write_publication_marker() {
+	local worktree_path="$1"
+	local canonical_repo="$2"
+	local resolved_worktree_path=""
+	local git_dir=""
+	local common_dir=""
+	local canonical_head=""
+	local marker_path=""
+	local marker_tmp=""
+
+	resolved_worktree_path=$(cd "$worktree_path" 2>/dev/null && pwd -P) || return 1
+	git_dir=$(git -C "$resolved_worktree_path" rev-parse --path-format=absolute --git-dir) || return 1
+	common_dir=$(git -C "$canonical_repo" rev-parse --path-format=absolute --git-common-dir) || return 1
+	canonical_head=$(git -C "$canonical_repo" rev-parse HEAD) || return 1
+	marker_path="${git_dir}/aidevops-profile-publication.json"
+	marker_tmp="${marker_path}.$$"
+	jq -n \
+		--arg schema "aidevops-profile-publication/v1" \
+		--arg producer "$PROFILE_PUBLICATION_REGISTRY_TASK" \
+		--arg worktree_path "$resolved_worktree_path" \
+		--arg canonical_common_dir "$common_dir" \
+		--arg canonical_head "$canonical_head" \
+		--argjson created_epoch "$(date +%s)" \
+		'{schema:$schema,producer:$producer,worktree_path:$worktree_path,canonical_common_dir:$canonical_common_dir,canonical_head:$canonical_head,created_epoch:$created_epoch}' \
+		>"$marker_tmp" || {
+		rm -f "$marker_tmp"
+		return 1
+	}
+	chmod 600 "$marker_tmp" || {
+		rm -f "$marker_tmp"
+		return 1
+	}
+	mv "$marker_tmp" "$marker_path" || {
+		rm -f "$marker_tmp"
+		return 1
+	}
+	return 0
+}
+
 _profile_publication_worktree_has_no_active_owner() {
 	local worktree_path="$1"
+	local cleanup_owner_pid="$$"
 	local owner_state=""
 
 	# Source the registry in a subprocess so its shared command helpers cannot
@@ -147,12 +208,12 @@ _profile_publication_worktree_has_no_active_owner() {
 	owner_state=$( (
 		# shellcheck source=shared-constants.sh
 		source "${SCRIPT_DIR}/shared-constants.sh" || exit 1
-		if is_worktree_owned_by_others "$worktree_path"; then
+		if is_worktree_owned_by_others_for_pid "$worktree_path" "$cleanup_owner_pid"; then
 			printf '%s\n' "owned"
 		else
 			printf '%s\n' "clear"
 		fi
-	) ) || return 1
+	)) || return 1
 	[[ "$owner_state" == "clear" ]] || return 1
 	return 0
 }
@@ -226,6 +287,7 @@ _cleanup_profile_publication_worktree() {
 		return 1
 	fi
 	if (cd "$canonical_repo" && "$worktree_helper" remove "$worktree_path" >/dev/null); then
+		_profile_publication_registry_update unregister "$worktree_path" || true
 		PROFILE_PUBLICATION_WORKTREE=""
 		PROFILE_PUBLICATION_CANONICAL_REPO=""
 		return 0
@@ -235,6 +297,7 @@ _cleanup_profile_publication_worktree() {
 		echo "Warning: profile publication worktree cleanup failed: $worktree_path" >&2
 		return 1
 	fi
+	_profile_publication_registry_update unregister "$worktree_path" || true
 	PROFILE_PUBLICATION_WORKTREE=""
 	PROFILE_PUBLICATION_CANONICAL_REPO=""
 	return 0
@@ -1914,6 +1977,17 @@ _profile_run_in_worktree() {
 	PROFILE_PUBLICATION_CANONICAL_REPO="$canonical_repo"
 	PROFILE_PUBLICATION_WORKTREE_BASE=$(cd "$worktree_base" 2>/dev/null && pwd -P) || return 1
 	PROFILE_PUBLICATION_CANONICAL_HEAD="$canonical_head_before"
+	local owner_session="profile-readme-${PROFILE_UPDATE_LOCK_TOKEN:-$$}"
+	if ! _profile_publication_registry_update register "$worktree_path" "$$" "$owner_session"; then
+		echo "Error: could not register profile publication worktree ownership" >&2
+		_cleanup_profile_publication_worktree || true
+		return 1
+	fi
+	if ! _profile_write_publication_marker "$worktree_path" "$canonical_repo"; then
+		echo "Error: could not write profile publication provenance marker" >&2
+		_cleanup_profile_publication_worktree || true
+		return 1
+	fi
 
 	local default_branch=""
 	default_branch=$(_profile_default_branch "$canonical_repo")

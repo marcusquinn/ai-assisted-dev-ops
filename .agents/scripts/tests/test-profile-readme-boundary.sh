@@ -370,6 +370,7 @@ test_update_recovers_dirty_profile_publication_worktree() {
 	local refusing_helper="${helper_dir}/refusing-worktree-helper.sh"
 	local recovery_root="${TEST_DIR}/recovery"
 	local output_file="${TEST_DIR}/update-output"
+	local marker_evidence="${TEST_DIR}/marker-evidence"
 
 	mkdir -p "$helper_dir" "$fixture_home"
 	install_helper_with_libs "$helper_dir"
@@ -381,6 +382,20 @@ set -euo pipefail
 
 target="${2:-}"
 [[ -n "$target" ]] || exit 1
+git_dir=$(git -C "$target" rev-parse --path-format=absolute --git-dir)
+marker_path="${git_dir}/aidevops-profile-publication.json"
+resolved_target=$(cd "$target" && pwd -P)
+jq -e --arg target "$resolved_target" '
+    .schema == "aidevops-profile-publication/v1"
+    and .producer == "profile-readme"
+    and .worktree_path == $target
+' "$marker_path" >/dev/null
+# shellcheck source=../shared-constants.sh
+source "$(cd "$(dirname "$0")" && pwd)/shared-constants.sh"
+owner_snapshot=$(check_worktree_owner_snapshot "$target")
+IFS='|' read -r owner_pid _ _ owner_task _ owner_process_start <<<"$owner_snapshot"
+[[ "$owner_pid" =~ ^[1-9][0-9]*$ && "$owner_task" == "profile-readme" && -n "$owner_process_start" ]]
+printf 'verified\n' >"$PROFILE_MARKER_EVIDENCE"
 printf '%s\n' "recoverable fixture state" >"${target}/.profile-publication-fixture"
 exit 1
 EOF
@@ -392,6 +407,7 @@ EOF
 		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
 		AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
 		AIDEVOPS_PROFILE_WORKTREE_HELPER="$refusing_helper" \
+		PROFILE_MARKER_EVIDENCE="$marker_evidence" \
 		bash "$helper_path" update >"$output_file" 2>&1; then
 		print_helper_failure "$test_name" "helper update command failed" "$output_file"
 		return 0
@@ -399,6 +415,7 @@ EOF
 
 	if [[ "$(git -C "$fixture_repo" worktree list --porcelain | grep -c '^worktree ' || true)" != "1" ]] ||
 		[[ ! -d "$recovery_root" ]] ||
+		[[ "$(cat "$marker_evidence" 2>/dev/null)" != "verified" ]] ||
 		[[ -n "$(git -C "$fixture_repo" status --porcelain --untracked-files=all)" ]]; then
 		print_helper_failure "$test_name" "scratch worktree leaked, recovery archive missing, or canonical checkout changed" "$output_file"
 		return 0
