@@ -140,6 +140,7 @@ def canonical_json(value: Any) -> bytes:
 
 
 def _run(command: list[str], *, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    _require_source(bool(command) and command[0] in (GIT, SSH_KEYGEN), "required command is not approved")
     environment = None
     if command and command[0] == GIT:
         # #aidevops:trust-boundary — even ls-files runs core.fsmonitor. Never
@@ -150,7 +151,7 @@ def _run(command: list[str], *, input_bytes: bytes | None = None) -> subprocess.
         environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                             "GIT_OPTIONAL_LOCKS": "0"})
     try:
-        return subprocess.run(
+        return subprocess.run(  # nosec B603 -- fixed system binary allowlist, argv only, Git hooks disabled
             command,
             input=input_bytes,
             env=environment,

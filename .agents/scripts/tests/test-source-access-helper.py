@@ -114,7 +114,7 @@ class SourceAccessHelperTests(unittest.TestCase):
     def _proposal_spec(self) -> object:
         self._fixture_commit(self.repo)
         worktree = self.root / "implementation"
-        subprocess.run(
+        subprocess.run(  # nosec B603 -- fixed Git binary and local fixture worktree
             ["/usr/bin/git", "-C", str(self.repo), "worktree", "add", "--quiet",
              "--detach", str(worktree), "HEAD"], check=True,
         )
@@ -125,11 +125,19 @@ class SourceAccessHelperTests(unittest.TestCase):
         )
 
     def _fixture_commit(self, repo: Path) -> None:
-        subprocess.run(
+        subprocess.run(  # nosec B603 -- fixed Git binary and local fixture repository
             ["/usr/bin/git", "-C", str(repo), "-c", "user.name=Source Fixture",
              "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
              "commit", "--quiet", "-m", "fixture"], check=True,
         )
+
+    def test_broker_commands_are_limited_to_fixed_system_binaries(self) -> None:
+        core = HELPER._SOURCE_CORE
+        with mock.patch.object(core.subprocess, "run") as run:
+            for command in ([], ["/bin/sh", "-c", "exit 99"]):
+                with self.subTest(command=command), self.assertRaises(HELPER.SourceAccessError):
+                    core._run(command)
+            run.assert_not_called()
 
     def test_proposals_remain_powerless_after_delayed_attendance(self) -> None:
         core = HELPER._SOURCE_CORE
