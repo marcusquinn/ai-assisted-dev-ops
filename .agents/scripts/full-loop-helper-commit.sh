@@ -701,7 +701,7 @@ _validate_completion_bookkeeping_todo() {
 	fi
 	task_pattern="${task_id//./\\.}"
 	issue_mapping_lines=$(grep -E \
-		"^- \[[ x]\] t[0-9]+([.][0-9]+)* .*ref:GH#${issue_number}([^0-9]|$)" \
+		"^[[:blank:]]*- \[[ x]\] t[0-9]+([.][0-9]+)* .*ref:GH#${issue_number}([^0-9]|$)" \
 		"$todo_file" 2>/dev/null || true)
 	issue_mapping_count=$(printf '%s\n' "$issue_mapping_lines" | grep -c . || true)
 	if [[ "$issue_mapping_count" -ne 1 ]]; then
@@ -710,7 +710,7 @@ _validate_completion_bookkeeping_todo() {
 	fi
 	completion_line="$issue_mapping_lines"
 	if ! printf '%s\n' "$completion_line" | grep -Eq \
-		"^- \[x\] ${task_pattern}([[:space:]]|$)" ||
+		"^[[:blank:]]*- \[x\] ${task_pattern}([[:space:]]|$)" ||
 		! printf '%s\n' "$completion_line" | grep -Eq "pr:#${proof_pr}([^0-9]|$)" ||
 		! printf '%s\n' "$completion_line" | grep -Eq 'completed:[0-9]{4}-[0-9]{2}-[0-9]{2}([^0-9]|$)'; then
 		print_error "Completion bookkeeping TODO.md proof must complete ${task_id} with merged PR #${proof_pr}"
@@ -734,7 +734,7 @@ _validate_completion_bookkeeping_todo() {
 			patch_payload="${patch_line:1}"
 			[[ "$patch_payload" =~ ^[[:space:]]*$ ]] && continue
 			if ! printf '%s\n' "$patch_payload" | grep -Eq \
-				"^- \[[ x]\] ${task_pattern}([[:space:]]|$)"; then
+				"^[[:blank:]]*- \[[ x]\] ${task_pattern}([[:space:]]|$)"; then
 				print_error "Completion bookkeeping TODO.md diff changes content outside task ${task_id}"
 				return 1
 			fi
