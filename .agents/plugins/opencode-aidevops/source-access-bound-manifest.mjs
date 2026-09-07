@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { SOURCE_CONTEXT_REPLY, sourceContextInstanceId } from "./source-access-context.mjs";
+import { sourceAccessGit } from "./source-access-git.mjs";
 
 export const BOUND_RECEIPT_SCHEMA = "aidevops-source-access-receipt/v3";
 export const BOUND_PAYLOAD_SCHEMA = "aidevops-source-access-approval/v3";
@@ -40,8 +41,8 @@ function validateRepositoryBinding(repository, context) {
   const options = { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 };
   for (const [argument, field, identity] of [["--absolute-git-dir", "git_dir", "git_identity"],
     ["--git-common-dir", "common_dir", "common_identity"]]) {
-    const path = realpathSync(resolve(root, String(context.gitRun(context.git,
-      ["-C", root, "rev-parse", argument], options)).trim()));
+    const path = realpathSync(resolve(root, String(sourceAccessGit(context.git,
+      ["-C", root, "rev-parse", argument], options, context.gitRun)).trim()));
     check(path === repository[field] && !context.hasSymlinkComponent(path));
     checkIdentity(path, repository[identity], check, true);
   }

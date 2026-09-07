@@ -7,6 +7,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   linkSync,
   mkdtempSync,
@@ -645,6 +646,14 @@ test("the loaded verifier accepts only the exact signed receipt", () => {
   }
 });
 
+test("canonical source payload matches the Python broker for Unicode paths", () => {
+  const payload = { path: "/repo/secret-\u00e9.py", marker: "\u007f", astral: "\ud834\udd1e" };
+  const expected = execFileSync("python3", ["-I", "-B", "-c",
+    'import json,sys; print(json.dumps(json.loads(sys.argv[1]),sort_keys=True,separators=(",",":")),end="")',
+    JSON.stringify(payload)], { encoding: "utf8" });
+  assert.equal(canonicalReceiptPayload(payload), expected);
+});
+
 async function checkSignedManifest(inLinkedWorktree, bound = false) {
   const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
   mkdirSync(tempParent, { recursive: true });
@@ -673,7 +682,7 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
       execFileSync("/usr/bin/git", ["-C", canonicalRepo, "worktree", "add", "--detach", "--quiet", repo]);
     }
     execFileSync("git", ["-C", otherRepo, "init", "--quiet"]);
-    const relativePaths = ["secret-helper.sh", "secret-other.sh", "secret-third.sh"];
+    const relativePaths = ["secret-helper.sh", "secret-other.sh", bound ? "secret-third-\u00e9.sh" : "secret-third.sh"];
     const paths = relativePaths.map((name, index) => {
       const filePath = join(repo, name);
       writeFileSync(filePath, `source-${index}\n`);
@@ -690,6 +699,10 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
       "-q", "-t", "ed25519", "-N", "", "-C", "source-access@aidevops.sh", "-f", key,
     ]);
 
+    const fsmonitor = join(root, "fsmonitor-fixture");
+    writeFileSync(fsmonitor, "#!/bin/sh\ntouch fsmonitor-ran\nprintf 'fixture\\0'\n", { mode: 0o700 });
+    const gitConfig = join(canonicalRepo, ".git", "config");
+    writeFileSync(gitConfig, `${readFileSync(gitConfig, "utf8")}\n[core]\n\tfsmonitor = ${fsmonitor}\n`);
     let proposal;
     let proposalId;
     if (bound) {
@@ -790,6 +803,8 @@ async function checkSignedManifest(inLinkedWorktree, bound = false) {
       await hooks.toolExecuteBefore({ tool: "read", sessionID: sessionId, callID: filePath }, output);
       assert.equal(output.args.filePath, approval.approvedPath);
     }
+    assert.equal(existsSync(join(repo, "fsmonitor-ran")), false, "source verification must not execute repository commands");
+    assert.equal(existsSync(join(canonicalRepo, "fsmonitor-ran")), false, "runtime queries must not execute repository commands");
     if (bound) {
       for (const [field, value] of [["runtime_instance_id", "f".repeat(32)], ["runtime_pid", process.pid + 1],
         ["session_created_at", 2000], ["project_id", "other"]]) {

@@ -95,6 +95,22 @@ class SourceAccessHelperTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_source_git_queries_do_not_run_repository_fsmonitor(self) -> None:
+        marker = self.repo / "fsmonitor-ran"
+        hook = self.repo / ".git" / "hooks" / "fsmonitor-fixture"
+        hook.write_text("#!/bin/sh\ntouch fsmonitor-ran\nprintf 'fixture\\0'\n", encoding="utf-8")
+        hook.chmod(0o700)
+        config_path = self.repo / ".git" / "config"
+        original = config_path.read_text(encoding="utf-8")
+        config_path.write_text(original + f'\n[core]\n\tfsmonitor = {hook}\n', encoding="utf-8")
+        self.assertEqual(HELPER.tracked_source_identity(str(self.source))[0], str(self.source))
+        self.assertFalse(marker.exists(), "source approval must not execute a repository-supplied command")
+
+    def test_source_git_queries_ignore_inherited_scope_overrides(self) -> None:
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(self.root / "not-a-repository"),
+                                          "GIT_WORK_TREE": str(self.root)}):
+            self.assertEqual(HELPER.tracked_source_identity(str(self.source))[1], str(self.repo))
+
     def _proposal_spec(self) -> object:
         self._fixture_commit(self.repo)
         worktree = self.root / "implementation"

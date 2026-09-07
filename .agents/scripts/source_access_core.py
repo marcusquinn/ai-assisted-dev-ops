@@ -140,10 +140,20 @@ def canonical_json(value: Any) -> bytes:
 
 
 def _run(command: list[str], *, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    environment = None
+    if command and command[0] == GIT:
+        # #aidevops:trust-boundary — even ls-files runs core.fsmonitor. Never
+        # execute repository hooks or inherit a caller's Git scope as the broker.
+        command = [GIT, "--no-pager", "-c", "core.fsmonitor=false",
+                   "-c", "core.hooksPath=/dev/null", *command[1:]]
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                            "GIT_OPTIONAL_LOCKS": "0"})
     try:
         return subprocess.run(
             command,
             input=input_bytes,
+            env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,

@@ -22,6 +22,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { validatedManifestReceipt } from "./source-access-manifest-approval.mjs";
+import { sourceAccessGit } from "./source-access-git.mjs";
 import {
   ROOT_BROKER,
   applyApprovedRead,
@@ -59,7 +60,10 @@ function stableValue(value) {
 }
 
 export function canonicalReceiptPayload(payload) {
-  return JSON.stringify(stableValue(payload));
+  // Match Python json.dumps(..., ensure_ascii=True), including UTF-16 pairs.
+  // Otherwise a genuine Unicode-path proposal has a different hash/signature.
+  return JSON.stringify(stableValue(payload)).replace(/[\u007f-\uffff]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 function trustedRegularFile(filePath, trustUid) {
@@ -155,20 +159,20 @@ function trackedFileIdentity(filePath, git, run = execFileSync) {
   try {
     const gitRoot = realpathSync(
       String(
-        run(git, ["-C", dirname(filePath), "rev-parse", "--show-toplevel"], {
+        sourceAccessGit(git, ["-C", dirname(filePath), "rev-parse", "--show-toplevel"], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 15000,
-        }),
+        }, run),
       ).trim(),
     );
     const relativePath = relative(gitRoot, filePath);
     if (!relativePath || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) return false;
-    run(git, ["-C", gitRoot, "ls-files", "--error-unmatch", "--", relativePath], {
+    sourceAccessGit(git, ["-C", gitRoot, "ls-files", "--error-unmatch", "--", relativePath], {
       encoding: "utf8",
       stdio: ["ignore", "ignore", "ignore"],
       timeout: 15000,
-    });
+    }, run);
     return { repoRoot: gitRoot, relativePath };
   } catch {
     return false;

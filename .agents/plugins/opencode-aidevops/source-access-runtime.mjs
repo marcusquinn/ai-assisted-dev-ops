@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { sourceGitArguments, sourceGitEnvironment } from "./source-access-git.mjs";
 import {
   createSourceContextResponder,
   listenSourceContext,
@@ -24,9 +25,11 @@ function commandEnvironment() {
 }
 
 async function command(program, args, signal) {
+  const environment = commandEnvironment();
+  if (program === "/usr/bin/git") args = sourceGitArguments(args);
   const { stdout } = await run(program, args, {
     encoding: "utf8", timeout: 3000, maxBuffer: 256 * 1024,
-    env: commandEnvironment(), signal,
+    env: program === "/usr/bin/git" ? sourceGitEnvironment(environment) : environment, signal,
   });
   return stdout;
 }

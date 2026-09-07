@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { BOUND_RECEIPT_SCHEMA, BOUND_PAYLOAD_SCHEMA, boundManifestIdentity } from "./source-access-bound-manifest.mjs";
+import { sourceAccessGit } from "./source-access-git.mjs";
 
 const MANIFEST_RECEIPT_SCHEMA = "aidevops-source-access-receipt/v2";
 const MANIFEST_PAYLOAD_SCHEMA = "aidevops-source-access-approval/v2";
@@ -92,14 +93,14 @@ function repositoryContextMatches(repositoryDir, requestedRoot, git, gitRun) {
   if (contextRoot === requestedRoot) return true;
   const options = { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15000 };
   const commonDir = (root) => realpathSync(resolve(root, String(
-    gitRun(git, ["-C", root, "rev-parse", "--git-common-dir"], options),
+    sourceAccessGit(git, ["-C", root, "rev-parse", "--git-common-dir"], options, gitRun),
   ).trim()));
   if (commonDir(contextRoot) !== commonDir(requestedRoot)) return false;
   // The ambient app may remain in the canonical checkout. Require an actual
   // registered worktree in that same repository, not an arbitrary directory.
   // This proves context only: the signed payload still binds the exact root,
   // paths, session, user, bytes and snapshots below. No grant is transferred.
-  const worktrees = String(gitRun(git, ["-C", contextRoot, "worktree", "list", "--porcelain", "-z"], options));
+  const worktrees = String(sourceAccessGit(git, ["-C", contextRoot, "worktree", "list", "--porcelain", "-z"], options, gitRun));
   return worktrees.split("\0").includes(`worktree ${requestedRoot}`);
 }
 
