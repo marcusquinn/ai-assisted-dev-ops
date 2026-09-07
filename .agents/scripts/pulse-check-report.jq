@@ -304,11 +304,13 @@ end) as $max_workers |
         "Issues need owned progress assessment after at least one hour";
         [
           ("issues=" + ($queue.aggregate.no_durable_progress_hour | tostring)),
+          ("owned_without_durable_progress=" + (($queue.aggregate.no_durable_progress_owned // 0) | tostring)),
+          ("unowned_without_durable_progress=" + (($queue.aggregate.no_durable_progress_unowned // 0) | tostring)),
           ("oldest_issue_age_minutes=" + ($queue.aggregate.oldest_issue_age_min | tostring)),
           ("oldest_durable_progress_age_minutes=" + ($queue.aggregate.oldest_durable_progress_age_min | tostring)),
           "clock=creation_linked_pr_commits_terminal_checks_not_comments"
         ];
-        "Freshly inspect the affected registered queue and choose one evidence-backed recovery per unchanged target: continue its live owner, route a released approved draft through dispatch-approved, or send a bounded scope-revision request to the authorised brief owner. Preserve ownership and external waits. Do not create replacement PRs, redispatch unchanged blockers, or post repeated age/status comments; retain the action in the existing recovery receipt.";
+        "Freshly inspect the affected registered queue and choose one evidence-backed recovery per unchanged target. Start with owned targets (assignee or active lifecycle label) and continue only a verified live owner; for unowned targets, route only a released approved draft through dispatch-approved. Send a bounded scope-revision request to the authorised brief owner when neither path applies. Preserve ownership and external waits. Do not create replacement PRs, redispatch unchanged blockers, or post repeated age/status comments; retain the action in the existing recovery receipt.";
         true
       )
     else empty end,

@@ -68,6 +68,8 @@ def _empty_aggregate() -> dict[str, int]:
         "excluded_persistent_dashboard": 0,
         "available_old": 0,
         "no_durable_progress_hour": 0,
+        "no_durable_progress_owned": 0,
+        "no_durable_progress_unowned": 0,
         "oldest_issue_age_min": 0,
         "oldest_durable_progress_age_min": 0,
         "durable_progress_unknown": 0,
@@ -128,11 +130,20 @@ def _durable_progress_age(slug: str, issue: dict[str, Any], now: dt.datetime) ->
 
 
 def _count_durable_progress(aggregate: dict[str, int], slug: str,
-                            issue: dict[str, Any], now: dt.datetime) -> None:
+                             issue: dict[str, Any], now: dt.datetime) -> None:
+    no_progress_before = aggregate["no_durable_progress_hour"]
     context = progress_scan.ProgressContext(slug, _run_gh_json,
-                                            lambda probe: _dependency_diagnostic(slug, probe),
-                                            PERSISTENT_DASHBOARD_LABELS)
+                                             lambda probe: _dependency_diagnostic(slug, probe),
+                                             PERSISTENT_DASHBOARD_LABELS)
     progress_scan.count_progress(aggregate, issue, now, context)
+    if aggregate["no_durable_progress_hour"] == no_progress_before:
+        return
+    labels = _issue_labels(issue)
+    owned = bool(issue.get("assignees")) or bool(
+        labels & {"status:claimed", "status:in-progress", "status:in-review", "status:queued"}
+    )
+    key = "no_durable_progress_owned" if owned else "no_durable_progress_unowned"
+    aggregate[key] += 1
 
 
 def _load_repos(repos_json: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
