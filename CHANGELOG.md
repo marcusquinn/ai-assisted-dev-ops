@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- avoid false Pulse watchdog revivals when systemd is inactive but Pulse is still live
+- promote OpenCode 1.18.29 compatibility after changelog review
+
 ## [3.32.332] - 2026-09-07
 
 ### Changed
