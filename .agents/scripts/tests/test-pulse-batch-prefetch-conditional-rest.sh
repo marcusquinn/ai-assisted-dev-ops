@@ -80,7 +80,11 @@ if [[ "\$1" == "api" ]]; then
     printf 'HTTP/2 304\\r\\netag: "etag-v1"\\r\\n\\r\\n'
     exit 1
   fi
-  if [[ "$mode" == "changed" ]]; then
+  if [[ "$mode" == "mixed" && "\$*" == *'repos/owner/failing/'* ]]; then
+    printf 'HTTP/2 500\\r\\n\\r\\n{}'
+    exit 1
+  fi
+  if [[ "$mode" == "changed" || "$mode" == "mixed" ]]; then
     if [[ "\$*" == *'/pulls?state=open'* ]]; then
       printf 'HTTP/2 200\\r\\netag: "etag-pr-v2"\\r\\n\\r\\n[{"number":7,"title":"PR","updated_at":"2026-05-02T00:00:00Z","user":{"login":"dev"},"head":{"sha":"abc","ref":"branch"}}]'
       exit 0
@@ -786,6 +790,26 @@ SH
 	return 0
 }
 
+test_partial_failure_keeps_successful_snapshots() {
+	setup_env
+	printf '%s\n' '{"initialized_repos":[{"slug":"owner/repo","pulse":true},{"slug":"owner/failing","pulse":true}],"git_parent_dirs":[]}' >"$REPOS_JSON"
+	write_gh_stub mixed
+	"$HELPER" refresh >/dev/null 2>&1 || true
+	local successful_calls=0 failed_calls=0
+	successful_calls=$(grep -c 'repos/owner/repo/' "$TEST_ROOT/gh-calls.log" || true)
+	failed_calls=$(grep -c 'repos/owner/failing/' "$TEST_ROOT/gh-calls.log" || true)
+	if [[ "$successful_calls" -eq 2 && "$failed_calls" -eq 4 ]] &&
+		jq -e '.source == "conditional-rest" and .complete == true' "$PULSE_BATCH_PREFETCH_CACHE_DIR/issues-owner__repo.json" >/dev/null &&
+		jq -e '.source == "conditional-rest" and .complete == true' "$PULSE_BATCH_PREFETCH_CACHE_DIR/prs-owner__repo.json" >/dev/null; then
+		print_result "partial issues and PR failure retries only failed repositories" 0
+	else
+		print_result "partial issues and PR failure retries only failed repositories (successful=${successful_calls}, failed=${failed_calls})" 1
+	fi
+	teardown_env
+	return 0
+}
+
+test_partial_failure_keeps_successful_snapshots
 test_unchanged_repo_uses_304_cache
 test_changed_repo_refreshes_cache
 test_bodyless_transport_rows_are_rejected

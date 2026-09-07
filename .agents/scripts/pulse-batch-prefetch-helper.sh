@@ -780,13 +780,17 @@ _conditional_rest_refresh_slug() {
 _conditional_rest_per_slug() {
 	local kind="$1"
 	local slugs="${2:-}"
+	# Bash 3.2 output parameter, scoped by each owner/collection caller.
+	_CONDITIONAL_REST_FAILED_SLUGS=""
 	[[ -n "$slugs" ]] || return 1
-	local slug="" failures=0
+	local slug=""
 	while IFS= read -r slug; do
 		[[ -n "$slug" ]] || continue
-		_conditional_rest_refresh_slug "$kind" "$slug" || failures=$((failures + 1))
+		if ! _conditional_rest_refresh_slug "$kind" "$slug"; then
+			_CONDITIONAL_REST_FAILED_SLUGS="${_CONDITIONAL_REST_FAILED_SLUGS:+${_CONDITIONAL_REST_FAILED_SLUGS},}${slug}"
+		fi
 	done < <(tr ',' '\n' <<< "$slugs")
-	[[ "$failures" -eq 0 ]] || return 1
+	[[ -z "$_CONDITIONAL_REST_FAILED_SLUGS" ]] || return 1
 	return 0
 }
 
@@ -887,10 +891,12 @@ _refresh_owner_issues() {
 	local owner="$1"
 	local slugs="${2:-}"
 	local graphql_remaining="${3:-}"
+	local _CONDITIONAL_REST_FAILED_SLUGS=""
 	if _conditional_rest_per_slug issues "$slugs"; then
 		_log "conditional REST issues complete for owner=${owner} — skipped search"
 		return 0
 	fi
+	slugs="$_CONDITIONAL_REST_FAILED_SLUGS"
 	if _search_should_route_to_rest "$graphql_remaining"; then
 		_route_owner_search_to_rest issues "$owner" "$slugs"
 		return 0
@@ -954,10 +960,12 @@ _refresh_owner_prs() {
 	local owner="$1"
 	local slugs="${2:-}"
 	local graphql_remaining="${3:-}"
+	local _CONDITIONAL_REST_FAILED_SLUGS=""
 	if _conditional_rest_per_slug prs "$slugs"; then
 		_log "conditional REST prs complete for owner=${owner} — skipped search"
 		return 0
 	fi
+	slugs="$_CONDITIONAL_REST_FAILED_SLUGS"
 	if _search_should_route_to_rest "$graphql_remaining"; then
 		_route_owner_search_to_rest prs "$owner" "$slugs"
 		return 0
