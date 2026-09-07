@@ -553,6 +553,7 @@ _run_pulse_watchdog() {
 	local start_epoch="$2"
 	local effective_cold_start_timeout="$3"
 	local last_active_refill_epoch=0
+	local watchdog_stop_reason=""
 
 	# Idle detection state (t1398.3)
 	local idle_seconds=0
@@ -585,6 +586,7 @@ _run_pulse_watchdog() {
 
 		# Single kill block — avoids duplicating the kill+force-kill sequence.
 		if [[ -n "$kill_reason" ]]; then
+			watchdog_stop_reason="$kill_reason"
 			# t3056 / GH#21781: Classify kill reason for structured telemetry.
 			# t3060 / GH#21788: Setters in _watchdog_check_progress, _watchdog_check_idle,
 			# and _check_watchdog_conditions emit "<UPPER_CLASS>:<prose>". We extract
@@ -625,7 +627,12 @@ _run_pulse_watchdog() {
 		sleep 60
 	done
 
-	# Reap the process (may already be dead)
-	wait "$opencode_pid" 2>/dev/null || true
-	return 0
+	# Reap the process (may already be dead) and preserve its status. A watchdog
+	# stop is itself unsuccessful even when the terminated child races to exit 0.
+	local child_rc=0
+	wait "$opencode_pid" 2>/dev/null || child_rc=$?
+	if [[ -n "$watchdog_stop_reason" ]]; then
+		return 1
+	fi
+	return "$child_rc"
 }

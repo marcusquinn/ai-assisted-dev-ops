@@ -259,8 +259,10 @@ run_pulse() {
 
 	echo "[pulse-wrapper] opencode PID: $opencode_pid" >>"$LOGFILE"
 
-	# Run the watchdog loop (checks stale/idle/progress, guards children)
-	_run_pulse_watchdog "$opencode_pid" "$start_epoch" "$effective_cold_start_timeout"
+	# Run the watchdog loop (checks stale/idle/progress, guards children) and
+	# retain the child/watchdog outcome for LLM completion accounting.
+	local pulse_rc=0
+	_run_pulse_watchdog "$opencode_pid" "$start_epoch" "$effective_cold_start_timeout" || pulse_rc=$?
 
 	# Write IDLE sentinel — never delete the PID file (GH#4324).
 	echo "IDLE:$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$PIDFILE"
@@ -268,8 +270,12 @@ run_pulse() {
 	local end_epoch
 	end_epoch=$(date +%s)
 	local duration=$((end_epoch - start_epoch))
-	echo "[pulse-wrapper] Pulse completed at $(date -u +%Y-%m-%dT%H:%M:%SZ) (ran ${duration}s)" >>"$LOGFILE"
-	return 0
+	if [[ "$pulse_rc" -eq 0 ]]; then
+		echo "[pulse-wrapper] Pulse completed at $(date -u +%Y-%m-%dT%H:%M:%SZ) (ran ${duration}s)" >>"$LOGFILE"
+	else
+		echo "[pulse-wrapper] Pulse failed at $(date -u +%Y-%m-%dT%H:%M:%SZ) (ran ${duration}s, rc=${pulse_rc})" >>"$LOGFILE"
+	fi
+	return "$pulse_rc"
 }
 
 # ---------------------------------------------------------------------------
