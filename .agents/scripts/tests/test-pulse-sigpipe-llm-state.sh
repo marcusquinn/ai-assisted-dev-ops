@@ -72,4 +72,38 @@ _pulse_record_llm_failure "daily_sweep" "7"
 _pulse_record_llm_success "daily_sweep"
 [[ -f "${PULSE_DIR}/last_llm_success_epoch" && -f "${PULSE_DIR}/last_llm_run_epoch" ]] || fail "success timestamps missing"
 
+now_epoch=$(date +%s)
+daily_epoch=$((now_epoch - 1000))
+printf '%s\n' "$daily_epoch" >"${PULSE_DIR}/last_daily_sweep_success_epoch"
+printf '%s 0 0\n' "$now_epoch" >"${PULSE_DIR}/backlog_snapshot.txt"
+_pulse_record_llm_success "stall"
+_should_run_llm_supervisor || fail "successful stall run postponed an overdue daily sweep"
+[[ "$(<"${PULSE_DIR}/llm_trigger_mode")" == daily_sweep ]] || fail "overdue sweep did not select daily mode"
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "stall changed daily completion evidence"
+_pulse_record_llm_success "first_run"
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "first-run changed daily completion evidence"
+_pulse_record_llm_failure "daily_sweep" 7
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "failed daily sweep advanced completion evidence"
+mv "${PULSE_DIR}/last_llm_success_epoch" "${PULSE_DIR}/saved-success"
+mkdir "${PULSE_DIR}/last_llm_success_epoch"
+if _pulse_record_llm_success "daily_sweep" 2>/dev/null; then
+	fail "generic success write failure was ignored"
+fi
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" == "$daily_epoch" ]] || fail "partial state write advanced daily cadence"
+rmdir "${PULSE_DIR}/last_llm_success_epoch"
+mv "${PULSE_DIR}/saved-success" "${PULSE_DIR}/last_llm_success_epoch"
+_pulse_record_llm_success "daily_sweep"
+[[ "$(<"${PULSE_DIR}/last_daily_sweep_success_epoch")" -ge "$now_epoch" ]] || fail "successful daily sweep did not advance its own clock"
+if _should_run_llm_supervisor; then
+	fail "recent daily success triggered another sweep with unchanged fresh backlog"
+fi
+
+# Migration may reuse a positively identified daily completion, not a stall.
+rm -f "${PULSE_DIR}/last_daily_sweep_success_epoch"
+if _should_run_llm_supervisor; then
+	fail "known legacy daily completion was ignored"
+fi
+_pulse_record_llm_success "stall"
+_should_run_llm_supervisor || fail "legacy stall completion suppressed first independently tracked daily sweep"
+
 printf 'PASS pulse SIGPIPE and LLM state regressions\n'
