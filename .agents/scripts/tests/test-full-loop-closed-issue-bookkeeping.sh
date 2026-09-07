@@ -183,6 +183,13 @@ _validate_explicit_pr_metadata() {
 	return 0
 }
 
+_validate_pending_runtime_metadata() {
+	# This harness supplies only low-risk metadata fixtures; runtime-risk
+	# derivation has separate coverage and does not use this synthetic git stub.
+	[[ "$1" == "low" && "$2" == "self-assessed" ]]
+	return $?
+}
+
 _stage_and_commit() {
 	local commit_message="$1"
 	[[ -n "$commit_message" ]] || return 1
@@ -548,6 +555,43 @@ test_unrelated_todo_change_refusal() {
 	return 0
 }
 
+test_indented_completion() {
+	local indent=""
+	local rc=0
+	for indent in '  ' $'\t'; do
+		reset_case
+		printf '%s- [x] t4242 Child ref:GH#42 pr:#900 completed:2026-08-04\n' "$indent" >"${FIXTURE_ROOT}/TODO.md"
+		printf -v TEST_TODO_PATCH '@@ -1 +1 @@\n-%s- [ ] t4242 Child ref:GH#42\n+%s- [x] t4242 Child ref:GH#42 pr:#900 completed:2026-08-04' "$indent" "$indent"
+		rc=0
+		invoke_bookkeeping >/dev/null || rc=$?
+		if [[ "$rc" -eq 0 && "$(call_count create-pr)" -eq 1 ]]; then
+			pass "indented child completion preserves the bookkeeping contract"
+		else
+			fail "indented child completion preserves the bookkeeping contract" "rc=${rc}"
+		fi
+	done
+	reset_case
+	printf '  - [x] t4242 Duplicate ref:GH#42 pr:#900 completed:2026-08-04\n' >>"${FIXTURE_ROOT}/TODO.md"
+	rc=0
+	invoke_bookkeeping >/dev/null || rc=$?
+	if [[ "$rc" -ne 0 && "$(call_count push)" -eq 0 ]]; then
+		pass "mixed-indent duplicate issue mappings remain rejected"
+	else
+		fail "mixed-indent duplicate issue mappings remain rejected" "rc=${rc}"
+	fi
+	reset_case
+	TEST_TODO_PATCH=$'@@ -1 +1 @@\n-  - [ ] t9999 Other ref:GH#99\n+  - [x] t9999 Other ref:GH#99'
+	rc=0
+	invoke_bookkeeping >/dev/null || rc=$?
+	if [[ "$rc" -ne 0 && "$(call_count push)" -eq 0 ]]; then
+		pass "unrelated indented task changes remain rejected"
+	else
+		fail "unrelated indented task changes remain rejected" "rc=${rc}"
+	fi
+	return 0
+}
+
+test_indented_completion
 test_completed_success
 test_not_planned_success
 test_default_closed_refusal
