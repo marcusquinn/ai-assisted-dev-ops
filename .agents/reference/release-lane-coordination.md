@@ -58,6 +58,41 @@ does not grant that authority. Never mutate an already published immutable tag
 to repair drift. A terminal receipt releases ordinary work through the existing
 lane finalization contract.
 
+## Executor liveness and abandoned reservations (GH#31464)
+
+An active merge fence is **not** evidence of an active release executor. Status
+and blocked merge diagnostics report `RELEASE_EXECUTOR` separately: `live`,
+`dead`, or `unknown`. A matching host digest, PID and process start time establish
+local process identity; a reused PID is not the original executor. Foreign hosts,
+legacy records, missing dependencies or permission failures remain unknown.
+Process liveness alone does not prove useful progress; retain phase/PR evidence.
+
+New reservations record an executor and the `fenced-prepublication/v1` contract.
+For an untouched `reserved` lane older than the existing five-minute grace period,
+with a verifiably dead local executor, no tag, no terminal receipt and no recovery
+transaction, the write-authorized recovery operation is:
+
+```bash
+aidevops release recover-reservation SOURCE_PR
+```
+
+It re-reads remote state and verifies write authority, then uses the existing
+compare-and-swap to persist `abandoned-prepublication` and make the lane inactive.
+It does not publish, alter tags, or change the source PR's release receipt. A
+concurrent transition to preparing/adoption wins the CAS and blocks recovery.
+The publisher must enter preparing successfully before invoking publication.
+Ordinary Full-loop/Pulse merge guards and competing release starts use the same
+bounded recovery for eligible reservations; status remains read-only.
+
+Age alone never unlocks a lane. Live/recent reservations, legacy/foreign owners,
+preparing/publication phases and aggregation recovery are not automatically
+released. For a reservation without a recorded tag, tag-based `reconcile` may
+have nothing to resume: the authorized release owner must restart the same
+source with its original increment and persisted intent. This does not grant a
+new session publication authority. Do not report background progress without
+an observed executor or current recovery evidence. A resumed legacy transaction
+does not gain automatic-recovery eligibility merely by acquiring new metadata.
+
 ## Verification
 
 Run from the repository root:
@@ -65,6 +100,8 @@ Run from the repository root:
 ```bash
 bash .agents/scripts/tests/test-release-lane-reservation.sh
 bash .agents/scripts/tests/test-release-lane.sh
+python3 .agents/scripts/tests/test-release-lane-owner.py
+bash .agents/scripts/tests/test-release-lane-liveness.sh
 bash .agents/scripts/tests/test-full-loop-release-aggregate-recovery.sh
 bash .agents/scripts/tests/test-full-loop-release-reconcile.sh
 shellcheck .agents/scripts/release-lane-helper.sh .agents/scripts/tests/test-release-lane-reservation.sh

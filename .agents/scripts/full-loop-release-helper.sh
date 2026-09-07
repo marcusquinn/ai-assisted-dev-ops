@@ -256,6 +256,7 @@ Usage:
   aidevops release [patch|minor|major] SOURCE_PR [incremental|full] [--expected-sources PR[,PR...]]
   aidevops release status SOURCE_PR
   aidevops release reconcile SOURCE_PR
+  aidevops release recover-reservation SOURCE_PR
   aidevops release refresh-aggregate STALE_AGGREGATION_PR
   aidevops release recover-aggregate SOURCE_PR --tag TAG --expected-sources PR[,PR...]
   aidevops release authorization-gap SOURCE_PR --tag TAG --expected-sources PR@SHA[,PR@SHA...] --reason TEXT
@@ -413,10 +414,15 @@ _full_loop_release_existing_with_lane() {
 	local lane_owned=false
 	local lane_phase=""
 	existing_repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+	if [[ "$release_type" == "recover-reservation" ]]; then
+		release_lane_recover_reservation "$existing_repo" "$source_pr"
+		return $?
+	fi
 	release_lane_read "$existing_repo" || lane_read_rc=$?
 	case "$lane_read_rc" in
 	0)
 		printf 'RELEASE_LANE=%s\n' "$(jq -c '{active,source_pr,phase,tag,updated_at,terminal_receipt}' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
+		release_lane_liveness_report "$_AIDEVOPS_RELEASE_LANE_JSON"
 		if jq -e --argjson source_pr "$source_pr" '.active == true and .source_pr == $source_pr' \
 			<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
 			lane_owned=true
@@ -482,11 +488,15 @@ _full_loop_release_guard_competing_lane() {
 	esac
 	if jq -e --argjson source_pr "$source_pr" '.active == true and .source_pr != $source_pr' \
 		<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		if _release_lane_abandoned_reservation "$_AIDEVOPS_RELEASE_LANE_JSON"; then
+			release_lane_recover_reservation "$repo" "$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" "$_AIDEVOPS_RELEASE_LANE_HEAD"
+			return $?
+		fi
 		printf 'ACTIVE_RELEASE_LANE source_pr=%s phase=%s tag=%s\n' \
 			"$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" \
 			"$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" \
 			"$(jq -r '.tag // "pending"' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
-		printf 'Resume with: aidevops release reconcile %s\n' "$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
+		release_lane_liveness_report "$_AIDEVOPS_RELEASE_LANE_JSON"
 		return 75
 	fi
 	return 0
@@ -606,11 +616,12 @@ main() {
 		_full_loop_release_usage
 		return 0
 		;;
-	status | reconcile)
+	status | reconcile | recover-reservation)
 		[[ "$source_pr" =~ ^[0-9]+$ ]] || {
 			_full_loop_release_usage >&2
 			return 1
 		}
+		[[ "$release_type" != "recover-reservation" || (-z "$tag_name" && -z "$gap_reason" && -z "$expected_sources") ]] || return 1
 		_full_loop_release_bind_repo_context || return 1
 		_full_loop_release_existing_with_lane "$release_type" "$source_pr"
 		return $?
