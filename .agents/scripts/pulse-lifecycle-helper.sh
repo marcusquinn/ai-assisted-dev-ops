@@ -84,12 +84,33 @@ unset _PULSE_BOOTSTRAP_SCRIPT_DIR _PULSE_RUNTIME_PIN_HELPER _PULSE_PINNED_ROOT _
 _PULSE_SCRIPT="${_PULSE_AGENTS_DIR}/scripts/pulse-wrapper.sh"
 _PULSE_LOG="${HOME}/.aidevops/logs/pulse-wrapper.log"
 
+_pulse_regex_escape_path() {
+	local _raw="$1"
+	local _out=""
+	local _char=""
+	local _i=0
+	for ((_i = 0; _i < ${#_raw}; _i++)); do
+		_char="${_raw:_i:1}"
+		case "$_char" in
+		[[:alnum:]] | _ | / | -) _out+="$_char" ;;
+		*) _out+="\\$_char" ;;
+		esac
+	done
+	printf '%s\n' "$_out"
+	return 0
+}
+
+_PULSE_HOME_REGEX="$(_pulse_regex_escape_path "$HOME")"
+_PULSE_DEFAULT_WRAPPER_PATTERN="(^|[[:space:]])${_PULSE_HOME_REGEX}/\.aidevops/(agents/scripts|runtime-bundles/[^[:space:]]+/agents/scripts)/pulse-wrapper\.sh([[:space:]]|$)"
+_PULSE_DEFAULT_MERGE_PATTERN="(^|[[:space:]])${_PULSE_HOME_REGEX}/\.aidevops/(agents/scripts|runtime-bundles/[^[:space:]]+/agents/scripts)/pulse-merge-routine\.sh([[:space:]]|$)"
+
 # Process-match pattern for pgrep. The production default matches any
-# pulse-wrapper.sh script regardless of path. Tests may override this to
-# isolate mock pulses from the live user pulse (the mock's path is embedded
-# in the pattern). See tests/test-pulse-lifecycle-helper.sh.
-_PULSE_PATTERN="${AIDEVOPS_PULSE_PROCESS_PATTERN:-(^|/)pulse-wrapper\\.sh( |\$)}"
-_PULSE_MERGE_PATTERN="${AIDEVOPS_PULSE_MERGE_PROCESS_PATTERN:-(^|/)pulse-merge-routine\\.sh( |\$)}"
+# pulse-wrapper.sh script under the current user's ~/.aidevops agents link or
+# immutable runtime bundles. This prevents another local user's Pulse from
+# satisfying this user's lifecycle checks on shared Linux hosts. Tests may
+# override this to isolate mock pulses from the live user pulse.
+_PULSE_PATTERN="${AIDEVOPS_PULSE_PROCESS_PATTERN:-$_PULSE_DEFAULT_WRAPPER_PATTERN}"
+_PULSE_MERGE_PATTERN="${AIDEVOPS_PULSE_MERGE_PROCESS_PATTERN:-$_PULSE_DEFAULT_MERGE_PATTERN}"
 
 # Timing
 _PULSE_RESTART_WAIT="${AIDEVOPS_PULSE_RESTART_WAIT:-3}"
