@@ -1103,10 +1103,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 	local repos_json="$1"
 	local now_epoch="$2"
 	local moved_count=0
-	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || {
-		echo 0
-		return 0
-	}
+	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || { echo 0; return 0; }
 
 	local repo_records_orphan
 	repo_records_orphan=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | [(.path // ""), (.slug // "")] | @tsv' "$repos_json" 2>/dev/null || printf '')
@@ -1243,10 +1240,7 @@ _pc_relocate_registered_worktree() {
 _pc_relocate_registered_worktrees() {
 	local repos_json="$1"
 	local moved_count=0
-	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || {
-		echo 0
-		return 0
-	}
+	[[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1 || { echo 0; return 0; }
 
 	local central_base=""
 	if declare -F aidevops_worktree_base_dir >/dev/null 2>&1; then
@@ -1255,10 +1249,7 @@ _pc_relocate_registered_worktrees() {
 		central_base=$(aidevops_worktree_base_dir_configured 2>/dev/null || true)
 		[[ -n "$central_base" ]] && mkdir -p "$central_base" 2>/dev/null || true
 	fi
-	[[ -n "$central_base" && -d "$central_base" ]] || {
-		echo 0
-		return 0
-	}
+	[[ -n "$central_base" && -d "$central_base" ]] || { echo 0; return 0; }
 
 	local repo_paths_move
 	repo_paths_move=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | .path // ""' "$repos_json" 2>/dev/null || printf '')

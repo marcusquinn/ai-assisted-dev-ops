@@ -68,13 +68,13 @@ setup_repo_with_worker_worktree() {
 		git commit -q -m "worker commit"
 	)
 	local old_ts
-	old_ts=$(date -u -v-30H +%Y%m%d%H%M 2>/dev/null ||
-		date -u -d "$age_spec" +%Y%m%d%H%M 2>/dev/null ||
-		printf '202601010000\n')
+	old_ts=$(date -u -v-30H +%Y%m%d%H%M 2>/dev/null \
+		|| date -u -d "$age_spec" +%Y%m%d%H%M 2>/dev/null \
+		|| printf '202601010000\n')
 	if [[ "$age_spec" == "8 days ago" ]]; then
-		old_ts=$(date -u -v-8d +%Y%m%d%H%M 2>/dev/null ||
-			date -u -d "$age_spec" +%Y%m%d%H%M 2>/dev/null ||
-			printf '202601010000\n')
+		old_ts=$(date -u -v-8d +%Y%m%d%H%M 2>/dev/null \
+			|| date -u -d "$age_spec" +%Y%m%d%H%M 2>/dev/null \
+			|| printf '202601010000\n')
 	fi
 	touch -t "$old_ts" "$wt_path/.git"
 	return 0
@@ -102,9 +102,9 @@ setup_repo_with_detached_review_worktree() {
 		git commit -q -m "review commit"
 	)
 	local old_ts
-	old_ts=$(date -u -v-2d +%Y%m%d%H%M 2>/dev/null ||
-		date -u -d "$age_spec" +%Y%m%d%H%M 2>/dev/null ||
-		printf '202601010000\n')
+	old_ts=$(date -u -v-2d +%Y%m%d%H%M 2>/dev/null \
+		|| date -u -d "$age_spec" +%Y%m%d%H%M 2>/dev/null \
+		|| printf '202601010000\n')
 	touch -t "$old_ts" "$wt_path/.git"
 	return 0
 }
@@ -118,11 +118,7 @@ source_pulse_cleanup_with_stubs() {
 	export ORPHAN_WORKTREE_GRACE_SECS
 
 	is_worktree_owned_by_others() { return 1; }
-	unregister_worktree() {
-		local wt_path="$1"
-		: "$wt_path"
-		return 0
-	}
+	unregister_worktree() { local wt_path="$1"; : "$wt_path"; return 0; }
 	gh() {
 		local target_type="${1:-}"
 		local action="${2:-}"
@@ -923,10 +919,7 @@ test_stale_dirty_attributed_worker_archives_before_removal() {
 
 test_no_newline_pr_output_blocks_local_commit_cleanup() {
 	source_pulse_cleanup_with_stubs || return 1
-	gh_pr_list() {
-		printf '42'
-		return 0
-	}
+	gh_pr_list() { printf '42'; return 0; }
 
 	local reason=""
 	reason=$(_evaluate_worktree_removal 1 0 $((25 * 3600)) "feature/has-pr" "testowner/testrepo" 2>/dev/null)
@@ -942,10 +935,7 @@ test_no_newline_pr_output_blocks_local_commit_cleanup() {
 
 test_no_newline_open_pr_output_blocks_clean_fastpath() {
 	source_pulse_cleanup_with_stubs || return 1
-	gh_pr_list() {
-		printf '42'
-		return 0
-	}
+	gh_pr_list() { printf '42'; return 0; }
 
 	local reason=""
 	reason=$(_evaluate_worktree_removal 0 0 3600 "feature/open-pr" "testowner/testrepo" 2>/dev/null)

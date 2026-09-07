@@ -213,7 +213,7 @@ _profile_publication_worktree_has_no_active_owner() {
 		else
 			printf '%s\n' "clear"
 		fi
-	)) || return 1
+	) ) || return 1
 	[[ "$owner_state" == "clear" ]] || return 1
 	return 0
 }
