@@ -121,8 +121,10 @@ _runtime_freshness_json() {
 	local active_manifest_file="${AIDEVOPS_ACTIVE_RUNTIME_MANIFEST_FILE:-${HOME}/.aidevops/agents/.bundle-manifest}"
 	local stamp_file="${AIDEVOPS_DEPLOYED_SHA_FILE:-${HOME}/.aidevops/.deployed-sha}"
 	local update_state_file="${AIDEVOPS_AUTO_UPDATE_STATE_FILE:-${HOME}/.aidevops/cache/auto-update-state.json}"
+	local recovery_state_file="${AIDEVOPS_PULSE_RUNTIME_RECOVERY_STATE_FILE:-${HOME}/.aidevops/cache/pulse-runtime-recovery.json}"
 	local upstream_ref="${AIDEVOPS_RUNTIME_UPSTREAM_REF:-}"
 	local canonical_sha="" upstream_sha="" deployed_sha=""
+	local recovery_state="{}"
 	local auto_update_status="$UNKNOWN_STATUS" auto_update_at="" deployment_relation=""
 	local status="$UNKNOWN_STATUS" action="Verify the canonical checkout and active runtime bundle"
 	local canonical_dirty=false canonical_on_main=false canonical_behind=false
@@ -141,6 +143,11 @@ _runtime_freshness_json() {
 	if [[ -r "$update_state_file" ]]; then
 		auto_update_status=$(jq -r --arg unknown "$UNKNOWN_STATUS" '.last_status // $unknown' "$update_state_file" 2>/dev/null || printf '%s' "$UNKNOWN_STATUS")
 		auto_update_at=$(jq -r '.last_timestamp // ""' "$update_state_file" 2>/dev/null || true)
+	fi
+	if [[ -r "$recovery_state_file" ]]; then
+		recovery_state=$(jq -c --arg unknown "$UNKNOWN_STATUS" 'if .schema == "aidevops-pulse-runtime-recovery/v1" then {
+			status:(.status // $unknown), reason:(.reason // $unknown), recorded_at:(.recorded_at // null)
+		} else {} end' "$recovery_state_file" 2>/dev/null || printf '{}')
 	fi
 	if ! git -C "$repo_path" diff --quiet 2>/dev/null || ! git -C "$repo_path" diff --cached --quiet 2>/dev/null; then
 		canonical_dirty=true
@@ -192,6 +199,7 @@ _runtime_freshness_json() {
 		--arg status "$status" --arg action "$action" --arg upstream_ref "$upstream_ref" \
 		--arg canonical_sha "$canonical_sha" --arg upstream_sha "$upstream_sha" --arg deployed_sha "$deployed_sha" \
 		--arg auto_status "$auto_update_status" --arg auto_at "$auto_update_at" \
+		--argjson recovery "$recovery_state" \
 		--argjson stale "$stale" --argjson dirty "$canonical_dirty" \
 		--argjson canonical_on_main "$canonical_on_main" --argjson canonical_behind "$canonical_behind" \
 		--argjson canonical_ahead "$canonical_ahead" --argjson canonical_diverged "$canonical_diverged" \
@@ -202,6 +210,7 @@ _runtime_freshness_json() {
 			upstream_ref:$upstream_ref, canonical_sha:$canonical_sha,
 			upstream_sha:$upstream_sha, deployed_sha:$deployed_sha,
 			auto_update_status:$auto_status, auto_update_at:$auto_at,
+			recovery:$recovery,
 			operator_action:$action
 		}'
 	return 0
@@ -315,6 +324,10 @@ _runtime_record_state_overlay() {
 
 _current_active_worker_processes() {
 	local active_worker_processes=""
+	if [[ "${AIDEVOPS_ACTIVE_WORKER_PROCESSES_OVERRIDE:-}" =~ ^[0-9]+$ ]]; then
+		printf '%s' "$AIDEVOPS_ACTIVE_WORKER_PROCESSES_OVERRIDE"
+		return 0
+	fi
 	if [[ -f "${SCRIPT_DIR}/worker-lifecycle-common.sh" ]]; then
 		# Keep worker process discovery in the shell lifecycle helper so Python
 		# static-analysis checks do not flag a subprocess bridge for this metric.

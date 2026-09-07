@@ -400,6 +400,98 @@ def build_current_state_guardrails(counter_hits, pre_launch_blockers, gauge_valu
     }
 
 
+def blocker_category(reason):
+    value = str(reason or '').lower()
+    if any(token in value for token in ('github', 'graphql', 'rest_', 'snapshot', 'enumeration', 'lookup_unavailable')):
+        return 'github_read_incomplete'
+    if any(token in value for token in ('dependency', 'blocked_by', 'prerequisite')):
+        return 'dependency_state'
+    if any(token in value for token in ('assign', 'claim', 'owner', 'lease')):
+        return 'assignment_ownership'
+    if any(token in value for token in ('label', 'status', 'auto_dispatch', 'dispatchable', 'eligible')):
+        return 'queue_labels'
+    return 'admission_failure'
+
+
+def build_zero_worker_underutilization(active_workers, worker_terminal_events, cycle_state,
+                                       pre_launch_blockers, gauge_values):
+    threshold_raw = os.environ.get('AIDEVOPS_ZERO_WORKER_MIN_CYCLES', '3')
+    threshold = int(threshold_raw) if threshold_raw.isdigit() and int(threshold_raw) > 0 else 3
+    available = gauge_values.get('pulse_dispatch_guardrail_available_slots')
+    available = int(available) if isinstance(available, (int, float)) else None
+    no_progress = ((cycle_state.get('progress') or {}).get('consecutive_no_progress_cycles')
+                   if cycle_state.get('availability') == 'available' else 0)
+    no_progress = no_progress if isinstance(no_progress, int) else 0
+    categories = {name: 0 for name in (
+        'queue_labels', 'dependency_state', 'assignment_ownership',
+        'admission_failure', 'github_read_incomplete',
+    )}
+    for reason, count in pre_launch_blockers.items():
+        categories[blocker_category(reason)] += count
+    prolonged = no_progress >= threshold
+    free_capacity = available is not None and available > 0
+    zero_delivery = active_workers == 0 and worker_terminal_events == 0
+    return {
+        'actionable': bool(free_capacity and zero_delivery and prolonged),
+        'available_slots': available,
+        'zero_delivery': zero_delivery,
+        'consecutive_no_progress_cycles': no_progress,
+        'minimum_cycles': threshold,
+        'classifications': categories,
+        'github_read_complete': categories['github_read_incomplete'] == 0,
+    }
+
+
+def build_permission_evidence(path):
+    latest = {}
+    retained_records = 0
+    try:
+        for line in recent_lines(path, 2000):
+            try:
+                item = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if item.get('schema') != 'aidevops-worker-blocker/v1':
+                continue
+            retained_records += 1
+            key = (item.get('repo_slug'), item.get('issue_number'),
+                   item.get('session_key'), item.get('request_id'))
+            if float(item.get('ts') or 0) >= float(latest.get(key, {}).get('ts') or 0):
+                latest[key] = item
+    except OSError:
+        pass
+    current = [item for item in latest.values()
+               if item.get('blocking') is True and item.get('status') == 'blocked'
+               and item.get('event') in {'permission_awaiting_approval', 'permission_request_persistence_failed'}]
+    historical = [item for item in latest.values() if item not in current]
+    return {
+        'retained_records': retained_records,
+        'distinct_requests': len(latest),
+        'proven_current_blockers': len(current),
+        'historical_or_reconciled': len(historical),
+        'current_reason_counts': dict(Counter(str(item.get('reason') or 'unknown') for item in current)),
+    }
+
+
+def build_resource_recovery_evidence(lines, worker_metrics):
+    direct_reasons = Counter()
+    for line in lines:
+        if '[lifecycle] worker_killed ' not in line or ' reason=' not in line:
+            continue
+        reason = line.split(' reason=', 1)[1].split(' ', 1)[0]
+        direct_reasons[reason] += 1
+    for item in worker_metrics:
+        result = str(item.get('result') or '')
+        if result in {'watchdog_stall_killed', 'watchdog_stall_continue'}:
+            direct_reasons[result] += 1
+    return {
+        'direct_evidence_count': sum(direct_reasons.values()),
+        'reason_counts': dict(direct_reasons),
+        'unattributed_service_kills': 0,
+        'attribution_policy': 'process lifecycle and worker metric evidence only',
+    }
+
+
 stage_records = []
 for line in recent_lines(os.path.join(log_dir, 'dispatch-stages.tsv')):
     record = parse_stage(line)
@@ -620,6 +712,13 @@ if os.path.isdir(review_thread_state_dir):
 objective_reconciliation = build_objective_reconciliation(
     os.environ.get('AIDEVOPS_OBJECTIVE_STATE_FILE', '')
 )
+zero_worker_underutilization = build_zero_worker_underutilization(
+    active_worker_processes, len(worker_metrics), cycle_state, pre_launch_blockers, gauge_values
+)
+permission_evidence = build_permission_evidence(
+    os.environ.get('AIDEVOPS_WORKER_BLOCKER_LOG_FILE', os.path.join(log_dir, 'worker-progress-blockers.jsonl'))
+)
+resource_recovery = build_resource_recovery_evidence(wrapper_log_lines, worker_metrics)
 
 result = {
     'window_seconds': window_s,
@@ -676,6 +775,9 @@ result = {
     'cycle_state': cycle_state,
     'review_thread_attention': review_thread_attention,
     'objective_reconciliation': objective_reconciliation,
+    'zero_worker_underutilization': zero_worker_underutilization,
+    'permission_evidence': permission_evidence,
+    'resource_recovery': resource_recovery,
 }
 
 runtime_state = {
@@ -703,6 +805,9 @@ runtime_state = {
     'resource_context': result['resource_context'],
     'review_thread_attention_count': len(review_thread_attention),
     'objective_reconciliation': objective_reconciliation,
+    'zero_worker_underutilization': zero_worker_underutilization,
+    'permission_evidence': permission_evidence,
+    'resource_recovery': resource_recovery,
     'window_seconds': window_s,
     'worker_outcomes': result['worker_outcomes'],
     'worker_result_counts': dict(metric_class_counts),
@@ -743,6 +848,9 @@ else:
     print(f'- Review-thread maintainer attention: {json.dumps(review_thread_attention, sort_keys=True)}')
     print(f'- Objectives without next action: {objective_reconciliation["objectives_without_next_action"]}')
     print(f'- Oldest unverified assumption: {json.dumps(objective_reconciliation["oldest_unverified_assumption"], sort_keys=True)}')
+    print(f'- Zero-worker under-utilization: {json.dumps(zero_worker_underutilization, sort_keys=True)}')
+    print(f'- Permission evidence: {json.dumps(permission_evidence, sort_keys=True)}')
+    print(f'- Resource recovery evidence: {json.dumps(resource_recovery, sort_keys=True)}')
     print(f'- Worker worktrees: {result["worker_worktrees"]}')
     if wrapper_activity:
         print('- Recent wrapper activity:')
