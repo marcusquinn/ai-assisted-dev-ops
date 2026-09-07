@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.335] - 2026-09-07
+
+### Changed
+
+- Documentation: improve SEO GEO entity evidence and experiment guidance
+- Documentation: correct DataForSEO backlink exporter guidance
+
+### Fixed
+
+- extend SimpleX approval timeout to 12 hours
+- recover durable raw PR creation
+- recover reclaimed fenced release lanes
+- preserve supervisor child failures (#31520)
+- recover dead preparing release lanes
+- classify stale queue progress ownership (#31518)
+- keep daily sweep cadence independent of stall runs
+
 ## [3.32.334] - 2026-09-07
 
 ### Fixed
