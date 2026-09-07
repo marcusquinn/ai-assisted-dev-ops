@@ -170,6 +170,115 @@ class SourceAccessHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(HELPER.SourceAccessError, "changed during approval"):
                 core.secure_source_content(str(self.source))
 
+    def _github_response(self, value: object, status: int = 200) -> object:
+        response = mock.Mock()
+        response.status = status
+        response.getheader.side_effect = lambda key, default=None: {"Content-Type": "application/json"}.get(key, default)
+        response.read.return_value = json.dumps(value).encode("utf-8")
+        return response
+
+    def test_github_reader_uses_fixed_tls_origin_without_executing_helpers(self) -> None:
+        core = HELPER._SOURCE_CORE
+        for credential in ("", "synthetic-private-token"):
+            with self.subTest(authenticated=bool(credential)):
+                reader = core.GitHubIssueReader("fixture/repo", 123, credential)
+                response = self._github_response({"number": 123, "title": "synthetic issue"})
+                with (mock.patch.object(core, "_github_tls_context", return_value=mock.sentinel.tls),
+                      mock.patch.object(core.http.client, "HTTPSConnection") as connection,
+                      mock.patch.object(core.subprocess, "run") as run,
+                      mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://unused.invalid"})):
+                    connection.return_value.getresponse.return_value = response
+                    self.assertEqual(reader.issue()["number"], 123)
+                    connection.assert_called_once_with("api.github.com", timeout=10, context=mock.sentinel.tls)
+                    request = connection.return_value.request.call_args
+                    self.assertEqual(request.args, ("GET", "/repos/fixture/repo/issues/123"))
+                    self.assertEqual("Authorization" in request.kwargs["headers"], bool(credential))
+                    connection.return_value.close.assert_called_once()
+                    run.assert_not_called()
+                self.assertNotIn("synthetic-private-token", repr(reader))
+
+    def test_github_reader_rejects_redirects_and_errors_without_response_leakage(self) -> None:
+        core = HELPER._SOURCE_CORE
+        reader = core.GitHubIssueReader("fixture/repo", 123, "synthetic-private-token")
+        for status in (301, 302, 401, 403, 404, 429, 500):
+            with self.subTest(status=status):
+                response = self._github_response({"credential": "synthetic-private-token"}, status)
+                with (mock.patch.object(core, "_github_tls_context"),
+                      mock.patch.object(core.http.client, "HTTPSConnection") as connection):
+                    connection.return_value.getresponse.return_value = response
+                    with self.assertRaises(HELPER.SourceAccessError) as caught:
+                        reader.issue()
+                    response.read.assert_not_called()
+                    connection.return_value.request.assert_called_once()
+                    self.assertNotIn("synthetic-private-token", str(caught.exception))
+
+    def test_github_reader_rejects_unsafe_targets_and_credentials(self) -> None:
+        core = HELPER._SOURCE_CORE
+        for repository, number, credential in (
+            ("fixture/../other", 1, ""), ("fixture/..", 1, ""),
+            ("fixture/repo?redirect=other", 1, ""), ("fixture/repo", True, ""),
+            ("fixture/repo", 0, ""), ("fixture/repo", 1, "injected\r\nHeader: value"),
+        ):
+            with self.subTest(repository=repository, number=number), self.assertRaises(HELPER.SourceAccessError):
+                core.GitHubIssueReader(repository, number, credential)
+
+    def test_github_reader_bounds_response_and_collection_sizes(self) -> None:
+        core = HELPER._SOURCE_CORE
+        reader = core.GitHubIssueReader("fixture/repo", 123)
+        response = self._github_response({})
+        response.read.return_value = b"x" * (core.GITHUB_RESPONSE_BYTES + 1)
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "exceeds the limit"):
+            core._github_response_json(response)
+        response.read.assert_called_once_with(core.GITHUB_RESPONSE_BYTES + 1)
+        with mock.patch.object(core.GitHubIssueReader, "_read", return_value=[{}] * 100) as read:
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "page limit"):
+                reader.collection("comments")
+            self.assertEqual(read.call_count, core.GITHUB_MAX_PAGES)
+        with mock.patch.object(core.GitHubIssueReader, "_read", side_effect=[[{}] * 100, [{"id": 101}]]):
+            self.assertEqual(len(reader.collection("timeline")), 101)
+        with mock.patch.object(core.GitHubIssueReader, "_read", return_value={"number": 124}):
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "identity changed"):
+                reader.issue()
+
+    def test_github_reader_rejects_ambiguous_json_and_sanitizes_transport_failures(self) -> None:
+        core = HELPER._SOURCE_CORE
+        reader = core.GitHubIssueReader("fixture/repo", 123, "synthetic-private-token")
+        for content in (b'{"number":123,"number":124}', b'{"number":NaN}', b'\xff', b'{broken'):
+            response = self._github_response({})
+            response.read.return_value = content
+            with (mock.patch.object(core, "_github_tls_context"),
+                  mock.patch.object(core.http.client, "HTTPSConnection") as connection):
+                connection.return_value.getresponse.return_value = response
+                with self.assertRaises(HELPER.SourceAccessError):
+                    reader.issue()
+        with (mock.patch.object(core, "_github_tls_context"),
+              mock.patch.object(core.http.client, "HTTPSConnection") as connection):
+            connection.return_value.request.side_effect = OSError("synthetic-private-token")
+            with self.assertRaises(HELPER.SourceAccessError) as caught:
+                reader.issue()
+            self.assertNotIn("synthetic-private-token", str(caught.exception))
+            self.assertTrue(caught.exception.__suppress_context__)
+
+    def test_github_tls_ignores_environment_and_refuses_user_owned_trust(self) -> None:
+        core = HELPER._SOURCE_CORE
+        bundle = mock.Mock()
+        bundle.parents = ()
+        bundle.stat.return_value.st_uid = 0
+        bundle.stat.return_value.st_mode = 0o100644
+        bundle.is_file.return_value = True
+        with (mock.patch.object(core, "Path") as path,
+              mock.patch.object(core.ssl, "SSLContext") as context,
+              mock.patch.dict(os.environ, {"SSL_CERT_FILE": "/untrusted/fixture-ca",
+                                           "SSL_CERT_DIR": "/untrusted/fixture-certs"})):
+            path.return_value.resolve.return_value = bundle
+            self.assertIs(core._github_tls_context(), context.return_value)
+            context.assert_called_once_with(core.ssl.PROTOCOL_TLS_CLIENT)
+            context.return_value.load_verify_locations.assert_called_once_with(cafile=str(bundle))
+            self.assertEqual(context.return_value.minimum_version, core.ssl.TLSVersion.TLSv1_2)
+            bundle.stat.return_value.st_uid = self.uid
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "TLS roots are unavailable"):
+                core._github_tls_context()
+
     def _proposal_cli(self, arguments: list[str], now: int) -> str:
         output = io.StringIO()
         with (mock.patch.object(HELPER, "Config", return_value=self.config),

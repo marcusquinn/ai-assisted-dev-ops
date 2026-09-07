@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import pwd
 import re
 import secrets
 import socket
+import ssl
 import stat
 import struct
 import subprocess
@@ -56,6 +58,10 @@ DENIED_NAMES = frozenset(
 DENIED_SUFFIXES = frozenset(".jks .key .keystore .p12 .pem .pfx".split())
 GIT = "/usr/bin/git"
 SSH_KEYGEN = "/usr/bin/ssh-keygen"
+GITHUB_API_HOST = "api.github.com"
+GITHUB_RESPONSE_BYTES = 2 * 1024 * 1024
+GITHUB_COLLECTION_BYTES = 8 * 1024 * 1024
+GITHUB_MAX_PAGES = 32
 
 
 def _current_timestamp() -> int:
@@ -64,6 +70,118 @@ def _current_timestamp() -> int:
 
 class SourceAccessError(RuntimeError):
     """Typed user-facing failure without source content."""
+
+
+def _github_tls_context() -> ssl.SSLContext:
+    """Use system-owned trust, never caller SSL_CERT_FILE/DIR or proxy settings."""
+    bundles = ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
+               "/etc/pki/tls/certs/ca-bundle.crt")
+    for candidate in bundles:
+        try:
+            bundle = Path(candidate).resolve(strict=True)
+            nodes = (bundle, *bundle.parents)
+            if not all(node.stat().st_uid == 0 and node.stat().st_mode & 0o022 == 0 for node in nodes):
+                continue
+            if not bundle.is_file():
+                continue
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_verify_locations(cafile=str(bundle))
+            return context
+        except (OSError, ssl.SSLError):
+            continue
+    raise SourceAccessError("trusted system TLS roots are unavailable; GitHub verification is disabled")
+
+
+def _github_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = dict(pairs)
+    _require_source(len(result) == len(pairs), "GitHub verification returned ambiguous JSON")
+    return result
+
+
+def _github_json_constant(_value: str) -> None:
+    raise SourceAccessError("GitHub verification returned invalid JSON")
+
+
+def _github_response_json(response: http.client.HTTPResponse) -> Any:
+    # Never expose response bodies, Location, authentication errors or credentials.
+    _require_source(response.status == 200, "GitHub verification failed; no authority was issued")
+    _require_source(response.getheader("Content-Encoding", "identity") == "identity",
+                    "encoded GitHub verification responses are unsupported")
+    _require_source(response.getheader("Content-Type", "").split(";")[0].strip().lower() == "application/json",
+                    "GitHub verification requires a JSON response")
+    content = response.read(GITHUB_RESPONSE_BYTES + 1)
+    _require_source(len(content) <= GITHUB_RESPONSE_BYTES, "GitHub verification response exceeds the limit")
+    return json.loads(content.decode("utf-8"), object_pairs_hook=_github_json_object,
+                      parse_constant=_github_json_constant)
+
+
+@dataclass(frozen=True)
+class GitHubIssueReader:
+    """Trusted read transport, NOT an approval verdict or a signing capability.
+
+    Authentication is opaque data used only with the fixed HTTPS origin. No gh,
+    jq, netrc, redirects, Link URLs, environment proxy or shell callback is used.
+    The ceremony must separately validate snapshot semantics and current state.
+    The socket timeout is an inactivity limit, not a whole-operation deadline.
+    """
+
+    repository: str
+    number: int
+    credential: str = field(default="", repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        _require_source(isinstance(self.repository, str) and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}", self.repository) is not None,
+            "invalid GitHub issue repository")
+        _require_source(self.repository.split("/")[1] not in (".", ".."), "invalid GitHub issue repository")
+        _require_source(type(self.number) is int and 0 < self.number < 2**53, "invalid GitHub issue number")
+        _require_source(isinstance(self.credential, str) and re.fullmatch(
+            r"[A-Za-z0-9_.-]{0,4096}", self.credential) is not None, "invalid GitHub authentication data")
+
+    def _read(self, collection: str = "", page: int = 1) -> Any:
+        _require_source(collection in ("", "comments", "timeline"), "unsupported GitHub verification route")
+        _require_source(type(page) is int and 1 <= page <= GITHUB_MAX_PAGES, "invalid GitHub verification page")
+        route = f"/repos/{self.repository}/issues/{self.number}"
+        if collection:
+            route += f"/{collection}?per_page=100&page={page}"
+        headers = {"Accept": "application/vnd.github+json", "Accept-Encoding": "identity",
+                   "User-Agent": "aidevops-source-access", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.credential:
+            headers["Authorization"] = f"Bearer {self.credential}"
+        connection = http.client.HTTPSConnection(GITHUB_API_HOST, timeout=10, context=_github_tls_context())
+        try:
+            connection.request("GET", route, headers=headers)
+            return _github_response_json(connection.getresponse())
+        except (OSError, http.client.HTTPException, ValueError, RecursionError):
+            raise SourceAccessError("GitHub verification failed; no authority was issued") from None
+        finally:
+            connection.close()
+
+    def issue(self) -> dict[str, Any]:
+        issue = self._read()
+        _require_source(isinstance(issue, dict), "invalid GitHub issue response")
+        _require_source(type(issue.get("number")) is int and issue["number"] == self.number,
+                        "GitHub issue identity changed")
+        _require_source("pull_request" not in issue, "source proposals require an issue, not a pull request")
+        return issue
+
+    def collection(self, kind: str) -> list[dict[str, Any]]:
+        _require_source(kind in ("comments", "timeline"), "unsupported GitHub verification collection")
+        result = []
+        total_bytes = 0
+        for page in range(1, GITHUB_MAX_PAGES + 1):
+            records = self._read(kind, page)
+            _require_source(isinstance(records, list) and len(records) <= 100,
+                            "invalid GitHub verification collection")
+            _require_source(all(isinstance(record, dict) for record in records),
+                            "invalid GitHub verification records")
+            total_bytes += len(canonical_json(records))
+            _require_source(total_bytes <= GITHUB_COLLECTION_BYTES, "GitHub verification collection exceeds the limit")
+            result.extend(records)
+            if len(records) < 100:
+                return result
+        raise SourceAccessError("GitHub verification collection exceeds the page limit")
 
 
 @dataclass(frozen=True)
