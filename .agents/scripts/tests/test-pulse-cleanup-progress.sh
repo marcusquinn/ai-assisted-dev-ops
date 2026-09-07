@@ -83,17 +83,8 @@ rc=0
 [[ "$(wc -l <"$CALLS" | tr -d ' ')" == "$before" ]]
 [[ ! -d "${AIDEVOPS_LOG_DIR}/cleanup_worktrees.lock" ]]
 
-# Restore production executor and prove orphan refusal is not counted as removal.
+# Restore production inventory for the following parser checks.
 source "${SCRIPT_DIR}/pulse-cleanup-progress.sh"
-mkdir -p "${TEST_ROOT}/linked path"
-_cleanup_single_worktree() {
-	[[ "$2" == "${TEST_ROOT}/linked path" ]] || exit 1
-	return 1
-}
-CLEANUP_WORKTREES_REMOVED_COUNT=0
-job=$(jq -cn --arg path "${TEST_ROOT}/linked path" '["orphan","/canonical","owner/repo",$path,"","main"]')
-_pc_progress_run_job "$job" "${HOME}/.config/aidevops/repos.json"
-[[ "$CLEANUP_WORKTREES_REMOVED_COUNT" == 0 ]]
 
 # Exercise the production NUL-delimited inventory parser, live remote slug,
 # detached candidates, paths with spaces, and local-only repository exclusion.
@@ -152,6 +143,18 @@ _pc_cleanup_resumable 10 || concurrency_rc=1
 : >"${TEST_ROOT}/holder-release"
 wait "$holder" || concurrency_rc=1
 [[ "$concurrency_rc" == 0 && ! -d "${AIDEVOPS_LOG_DIR}/cleanup_worktrees.lock" ]]
+
+# After all job mocks, restore the executor and verify real refusal accounting.
+source "${SCRIPT_DIR}/pulse-cleanup-progress.sh"
+mkdir -p "${TEST_ROOT}/linked path"
+_cleanup_single_worktree() {
+	[[ "$2" == "${TEST_ROOT}/linked path" ]] || exit 1
+	return 1
+}
+CLEANUP_WORKTREES_REMOVED_COUNT=0
+job=$(jq -cn --arg path "${TEST_ROOT}/linked path" '["orphan","/canonical","owner/repo",$path,"","main"]')
+_pc_progress_run_job "$job" "${HOME}/.config/aidevops/repos.json"
+[[ "$CLEANUP_WORKTREES_REMOVED_COUNT" == 0 ]]
 
 # Owner-write failure rolls back both newly acquired and reclaimed directories.
 (
