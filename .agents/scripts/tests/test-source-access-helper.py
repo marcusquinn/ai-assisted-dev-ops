@@ -176,6 +176,19 @@ class SourceAccessHelperTests(unittest.TestCase):
                 self.config, spec, proposal_id, issue_snapshot_sha256="a" * 64,
             )
 
+    def test_hash_consistent_malformed_proposal_timestamp_is_rejected(self) -> None:
+        core = HELPER._SOURCE_CORE
+        spec = self._proposal_spec()
+        proposal_id = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+        directory = core.proposal_directory(self.config, self.home)
+        record = json.loads((directory / f"{proposal_id}.json").read_text())
+        record["body"]["created_at"] = "invalid"
+        malformed_id = core.hashlib.sha256(core.canonical_json(record["body"])).hexdigest()
+        record["proposal_id"] = malformed_id
+        (directory / f"{malformed_id}.json").write_text(json.dumps(record))
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "timestamp is invalid"):
+            core.load_source_proposal(self.config, self.home, malformed_id, self.uid)
+
     def test_proposal_quota_and_explicit_withdrawal(self) -> None:
         core = HELPER._SOURCE_CORE
         spec = self._proposal_spec()

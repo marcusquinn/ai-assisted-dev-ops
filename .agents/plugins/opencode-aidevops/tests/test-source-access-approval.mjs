@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   mkdirSync,
   linkSync,
   mkdtempSync,
@@ -121,7 +122,9 @@ test("source context transport returns only bounded metadata and sanitized failu
 test("Python context probe uses kernel peer identity rather than a claimed PID", async () => {
   const parent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
   mkdirSync(parent, { recursive: true });
-  const directory = mkdtempSync(join(parent, "sc-"));
+  const root = mkdtempSync(join(parent, "sc-"));
+  const directory = join(root, "p");
+  mkdirSync(directory, { mode: 0o700 });
   const fixture = contextFixture();
   const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
   const script = "import runpy,sys,json,os; m=runpy.run_path(sys.argv[1]); "
@@ -142,9 +145,14 @@ test("Python context probe uses kernel peer identity rather than a claimed PID",
     assert.equal(context.runtime_instance_id, sourceContextInstanceId);
     forged = true;
     await assert.rejects(query(), /peer identity or challenge did not match/);
+    forged = false;
+    chmodSync(root, 0o777);
+    await assert.rejects(query(), /unsafe context socket ancestry/);
+    await assert.rejects(listenSourceContext({ directory, respond: fixture.respond }), /private user directory/);
   } finally {
+    chmodSync(root, 0o700);
     listener?.close();
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

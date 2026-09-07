@@ -426,6 +426,13 @@ def proposal_directory(config: Config, home: Path) -> Path:
 
 def _source_context_socket(path: Path, uid: int) -> dict[str, int]:
     _require_source(path.is_absolute() and not _has_symlink_component(path), "unsafe context socket")
+    for ancestor in path.parents:
+        metadata = ancestor.lstat()
+        _require_source(
+            stat.S_ISDIR(metadata.st_mode) and metadata.st_uid in (0, uid)
+            and metadata.st_mode & 0o022 == 0,
+            "unsafe context socket ancestry",
+        )
     _require_source(_trusted_private_directory(path.parent, uid), "unsafe context socket directory")
     metadata = path.lstat()
     _require_source(
@@ -651,6 +658,10 @@ def load_source_proposal(config: Config, home: Path, proposal_id: str, uid: int)
         and body.get("uid") == uid and hashlib.sha256(canonical_json(body)).hexdigest() == proposal_id,
         "proposal identity is invalid or was changed",
     )
+    _require_source(
+        type(body.get("created_at")) is int and body["created_at"] >= 0,
+        "proposal timestamp is invalid",
+    )
     return body
 
 
@@ -666,7 +677,7 @@ def revalidate_source_proposal_metadata(
         "proposal context changed; new explicit context consent is required",
     )
     created_at = body.get("created_at")
-    _require_source(type(created_at) is int and spec.now >= created_at, "proposal clock moved backwards")
+    _require_source(type(spec.now) is int and spec.now >= created_at, "proposal clock moved backwards")
     snapshot = _proposal_source_snapshot(spec)
     _require_source(
         all(body.get(key) == value for key, value in snapshot.items()),

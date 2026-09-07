@@ -59,6 +59,7 @@ function privateSocketDirectory(directory) {
   while (true) {
     const metadata = lstatSync(current);
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) return false;
+    if (![0, process.getuid()].includes(metadata.uid) || (metadata.mode & 0o022)) return false;
     if (current === directory && (metadata.uid !== process.getuid() || (metadata.mode & 0o077))) {
       return false;
     }
