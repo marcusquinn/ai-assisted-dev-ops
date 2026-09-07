@@ -59,4 +59,10 @@ if kill -0 "$parent_pid" 2>/dev/null || kill -0 "$child_pid" 2>/dev/null; then
 fi
 grep -q 'prefetch_batch_refresh timed out after 1s' "$LOGFILE"
 
+unset -f run_cmd_with_timeout
+rm -f "$PREFETCH_PARENT_PID_FILE" "$PREFETCH_CHILD_PID_FILE"
+_prefetch_batch_refresh
+[[ ! -e "$PREFETCH_PARENT_PID_FILE" && ! -e "$PREFETCH_CHILD_PID_FILE" ]]
+grep -q 'prefetch_batch_refresh skipped: timeout helper unavailable' "$LOGFILE"
+
 printf 'pulse batch refresh timeout test passed\n'

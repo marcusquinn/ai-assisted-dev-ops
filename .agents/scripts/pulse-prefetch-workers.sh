@@ -29,11 +29,12 @@ _prefetch_batch_refresh() {
 	local _batch_output="" _batch_rc=0
 	local _batch_timeout="${PULSE_BATCH_PREFETCH_TIMEOUT_SECONDS:-180}"
 	[[ "$_batch_timeout" =~ ^[1-9][0-9]*$ ]] || _batch_timeout=180
-	if declare -F run_cmd_with_timeout >/dev/null 2>&1; then
-		_batch_output=$(run_cmd_with_timeout "$_batch_timeout" "$_batch_helper" refresh 2>/dev/null) || _batch_rc=$?
-	else
-		_batch_output=$("$_batch_helper" refresh 2>/dev/null) || _batch_rc=$?
+	if ! declare -F run_cmd_with_timeout >/dev/null 2>&1; then
+		printf '[pulse-wrapper] prefetch_batch_refresh skipped: timeout helper unavailable (non-fatal)\n' \
+			>>"${LOGFILE:-/dev/null}" 2>/dev/null || true
+		return 0
 	fi
+	_batch_output=$(run_cmd_with_timeout "$_batch_timeout" "$_batch_helper" refresh 2>/dev/null) || _batch_rc=$?
 	if [[ "$_batch_rc" -eq 124 ]]; then
 		printf '[pulse-wrapper] prefetch_batch_refresh timed out after %ss (non-fatal)\n' \
 			"$_batch_timeout" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
