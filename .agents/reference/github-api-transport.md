@@ -109,6 +109,16 @@ child environment; credentials are never exported to a long-lived parent.
   Multiple PATs for that owner share an allowance. Unresolved callers share a
   conservative host scope. This is local coordination, **not distributed fleet
   admission**. Permission-scoped cache identity remains a separate concern.
+- Status reports the number of bound credentials and an anonymous ambiguity
+  reason. It never exposes credential fingerprints or owner values. When a
+  previously unresolved scope retains stale evidence, stop all local GitHub
+  requests, set one trusted owner consistently for every caller using that state,
+  then run `python3 .agents/scripts/gh_transport_budget.py reconcile`. Reconciliation refuses
+  active or uncertain requests, preserves live server cooldowns, reverses the
+  unresolved alias into the configured owner, and makes the next normal GET the
+  single serialized source of fresh quota. It is idempotent and cannot be used
+  repeatedly or with a different owner to discard attributed pacing evidence.
+  Do not use it to combine credentials belonging to different GitHub users or installations.
 
 Mutations, streamed inputs, inherited file descriptors, anonymous requests,
 GraphQL, interactive terminals and unsupported CLI shapes retain native

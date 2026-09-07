@@ -5,7 +5,9 @@
 
 import importlib.util
 import io
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,7 +16,7 @@ from unittest.mock import Mock, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
-from gh_transport_budget import Budget, Deferred, scope_key  # noqa: E402
+from gh_transport_budget import Budget, Deferred, quota_owner, reconcile_scope, scope_key  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location("governor", SCRIPTS / "gh-transport-governor.py")
 governor = importlib.util.module_from_spec(SPEC)
@@ -110,6 +112,117 @@ class AdmissionTests(unittest.TestCase):
         finally:
             other.close()
 
+    def test_configured_owner_recovers_shared_credential_balance(self):
+        self.seed(100)
+        other = Budget(self.directory, "owner-one", "different-credential", attributed=True)
+        try:
+            probe = other.acquire("core", now=1061)
+            other.finish(probe, "core", headers(4999), started=1061, now=1062)
+            self.assertEqual(other.db.execute("SELECT remaining FROM quota").fetchone()[0], 4999)
+        finally:
+            other.close()
+
+    def test_configured_owner_alias_cannot_recover_before_reconciliation(self):
+        self.seed(100)
+        other = Budget(self.directory, "owner-one", "different-credential")
+        configured = Budget(self.directory, "configured", "owner-one", attributed=True)
+        try:
+            self.assertFalse(configured.attributed)
+            probe = configured.acquire("core", now=1061)
+            configured.finish(probe, "core", headers(4999), started=1061, now=1062)
+            self.assertEqual(configured.db.execute("SELECT remaining FROM quota").fetchone()[0], 100)
+        finally:
+            configured.close()
+            other.close()
+
+    def test_status_marks_legacy_configured_alias_for_reconciliation(self):
+        from gh_transport_budget import admission_status
+        self.seed(100)
+        configured = Budget(self.directory, "configured", "owner-one", attributed=True)
+        try:
+            status = admission_status(self.directory, "configured", attributed=True)
+            self.assertEqual(status["ambiguity"], "configured_owner_requires_reconciliation")
+            self.assertEqual(status["reconcile_command"],
+                             "python3 .agents/scripts/gh_transport_budget.py reconcile")
+        finally:
+            configured.close()
+
+    def test_reconcile_requires_quiescence_without_mutating_state(self):
+        self.seed(100)
+        self.budget.acquire("core", now=1002)
+        before = list(self.budget.db.execute("SELECT * FROM quota"))
+        with self.assertRaisesRegex(Deferred, "no active or uncertain"):
+            reconcile_scope(self.directory, "owner-one", "configured", now=1003)
+        self.assertEqual(before, list(self.budget.db.execute("SELECT * FROM quota")))
+
+    def test_reconcile_refuses_uncertain_reservation(self):
+        self.seed(100)
+        request = self.budget.acquire("core", now=1002)
+        self.budget.finish(request, "core", {}, started=1002, now=1003)
+        with self.assertRaisesRegex(Deferred, "no active or uncertain"):
+            reconcile_scope(self.directory, "owner-one", "configured", now=1004)
+        self.assertEqual(self.budget.db.execute(
+            "SELECT uncertain FROM reservation"
+        ).fetchone()[0], 1)
+
+    def test_reconcile_preserves_cooldown_then_serializes_bootstrap(self):
+        self.seed(100)
+        self.budget.db.execute("UPDATE quota SET blocked_until=1100")
+        self.budget.db.execute("INSERT INTO pacing VALUES(?,?,?,?,?)",
+                               ("owner-one", "core", 2000, 1090, 100))
+        result = reconcile_scope(self.directory, "owner-one", "configured", now=1061)
+        self.assertEqual(result["state"], "reconciled")
+        configured = Budget(self.directory, "configured", "owner-one", attributed=True)
+        try:
+            with self.assertRaisesRegex(Deferred, "server resource cooldown"):
+                configured.acquire("core", now=1099)
+            probe = configured.acquire("core", now=1100)
+            with self.assertRaisesRegex(Deferred, "authoritative quota observation"):
+                configured.acquire("core", now=1100)
+            configured.finish(probe, "core", headers(4999, 2000), started=1100, now=1101)
+            self.assertEqual(configured.db.execute(
+                "SELECT remaining FROM quota WHERE scope='configured'"
+            ).fetchone()[0], 4999)
+            self.assertEqual(configured.db.execute("SELECT COUNT(*) FROM pacing").fetchone()[0], 0)
+        finally:
+            configured.close()
+
+    def test_reconcile_reverses_alias_once_and_preserves_other_scope(self):
+        self.seed(100)
+        other = Budget(self.directory, "owner-one", "different-credential")
+        independent = Budget(self.directory, "independent")
+        try:
+            independent_token = independent.acquire("core", now=1000)
+            independent.finish(independent_token, "core", headers(77), started=1000, now=1001)
+        finally:
+            other.close()
+            independent.close()
+        result = reconcile_scope(self.directory, "owner-one", "configured", now=1061)
+        self.assertEqual(result["bindings_rebound"], 2)
+        self.assertEqual(reconcile_scope(
+            self.directory, "owner-one", "configured", now=1062
+        )["state"], "already_reconciled")
+        with self.assertRaisesRegex(ValueError, "different configured owner"):
+            reconcile_scope(self.directory, "owner-one", "different-owner", now=1063)
+        self.assertEqual(self.budget._root("owner-one"), "configured")
+        self.assertEqual(self.budget.db.execute(
+            "SELECT remaining FROM quota WHERE scope='independent'"
+        ).fetchone()[0], 77)
+
+    def test_status_reports_unresolved_credential_ambiguity_without_identity(self):
+        from gh_transport_budget import admission_status
+        self.seed(100)
+        other = Budget(self.directory, "owner-one", "different-credential")
+        try:
+            with patch("gh_transport_recovery.time.time", return_value=1002):
+                status = admission_status(self.directory, "owner-one")
+            self.assertEqual(status["ambiguity"], "unresolved_scope_has_multiple_credentials")
+            self.assertEqual(status["bound_credentials"], 2)
+            self.assertIn("gh_transport_budget.py reconcile", status["reconcile_command"])
+            self.assertNotIn("different-credential", str(status))
+        finally:
+            other.close()
+
     def test_reserve_probe_never_spends_exhaustion_or_uncertain_last_point(self):
         self.seed(1)
         final = self.budget.acquire("core", now=1061)
@@ -176,6 +289,45 @@ class AdmissionTests(unittest.TestCase):
             first = scope_key("github.com")
         with patch.dict(os.environ, {"GH_TOKEN": "fixture-two"}):
             self.assertEqual(first, scope_key("github.com"))
+
+    def test_quota_owner_requires_explicit_valid_attribution(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(quota_owner(), ("unresolved", False))
+        with patch.dict(os.environ, {"AIDEVOPS_GH_QUOTA_OWNER": "account-one"}):
+            self.assertEqual(quota_owner(), ("account-one", True))
+        with patch.dict(os.environ, {"AIDEVOPS_GH_QUOTA_OWNER": "x" * 257}):
+            with self.assertRaisesRegex(ValueError, "invalid GitHub quota owner"):
+                quota_owner()
+
+    def test_reconcile_cli_bootstraps_configured_owner(self):
+        root = Path(os.environ.get(
+            "AIDEVOPS_TEMP_DIR", str(Path.home() / ".aidevops/.agent-workspace/tmp")
+        ))
+        with tempfile.TemporaryDirectory(prefix="gh-budget-cli-", dir=root) as temp:
+            directory = Path(temp)
+            unresolved = scope_key("github.com", "unresolved")
+            owner = scope_key("github.com", "account-one")
+            first = Budget(directory, unresolved, "credential-one")
+            second = Budget(directory, unresolved, "credential-two")
+            try:
+                token = first.acquire("core", now=1000)
+                first.finish(token, "core", headers(100), started=1000, now=1001)
+            finally:
+                first.close()
+                second.close()
+            environment = {**os.environ, "AIDEVOPS_GH_QUOTA_OWNER": "account-one",
+                           "AIDEVOPS_GH_TRANSPORT_STATE_DIR": str(directory)}
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "gh_transport_budget.py"), "reconcile"],
+                check=True, capture_output=True, text=True, env=environment,
+            )
+            self.assertEqual(json.loads(result.stdout)["state"], "reconciled")
+            configured = Budget(directory, owner, "credential-one", attributed=True)
+            try:
+                self.assertTrue(configured.attributed)
+                configured.acquire("core", now=1061)
+            finally:
+                configured.close()
 
     def test_owner_configuration_cannot_split_one_credential_budget(self):
         self.seed(0)

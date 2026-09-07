@@ -23,7 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from gh_transport_budget import Budget, Deferred, credential_identity, private_directory, scope_key
+from gh_transport_budget import Budget, Deferred, credential_identity, private_directory, quota_owner, scope_key
 
 
 VALUE_FLAGS = {
@@ -227,7 +227,8 @@ def run(metadata: Path, executable: str, args: list[str]) -> int:
             # Do not mix anonymous-IP and authenticated-user allowances or
             # trust an identity which could change before native execution.
             return 125
-        budget = Budget(directory, scope_key(host), credential)
+        owner, attributed = quota_owner()
+        budget = Budget(directory, scope_key(host, owner), credential, attributed=attributed)
         reservation = _acquire(budget, resource)
         with tempfile.TemporaryFile(dir=temp_dir) as output:
             native_args = args if include else [*args, "--include"]

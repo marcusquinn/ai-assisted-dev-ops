@@ -42,10 +42,19 @@ def private_directory(path: Path) -> None:
     path.chmod(0o700)
 
 
-def scope_key(host: str) -> str:
+def quota_owner() -> tuple[str, bool]:
+    owner = os.environ.get("AIDEVOPS_GH_QUOTA_OWNER", "")
+    if not owner or owner == "unresolved":
+        return "unresolved", False
+    if "\0" in owner or len(owner) > 256:
+        raise ValueError("invalid GitHub quota owner")
+    return owner, True
+
+
+def scope_key(host: str, owner: str | None = None) -> str:
     # Only trusted launch context may name a quota owner. A credential digest is
     # not a quota owner: two PATs can spend the same user's allowance.
-    owner = os.environ.get("AIDEVOPS_GH_QUOTA_OWNER", "unresolved")
+    owner = quota_owner()[0] if owner is None else owner
     return hashlib.sha256(f"{host}\0{owner}".encode()).hexdigest()
 
 
@@ -80,7 +89,8 @@ def process_birth(pid: int) -> str:
 
 
 class Budget:
-    def __init__(self, directory: Path, scope: str, credential: str | None = None):
+    def __init__(self, directory: Path, scope: str, credential: str | None = None,
+                 *, attributed: bool = False):
         private_directory(directory)
         self.path = directory / "admission.sqlite3"
         if self.path.is_symlink():
@@ -93,8 +103,10 @@ class Budget:
             raise ValueError("transport state file is not owned by this user")
         self.path.chmod(0o600)
         self.db = sqlite3.connect(self.path, timeout=2, isolation_level=None)
+        requested_scope = scope
         self.scope = scope
         self.credential = credential or scope
+        self.attributed = False
         self.birth = process_birth(os.getpid())
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS quota (
@@ -121,9 +133,14 @@ class Budget:
                 scope TEXT NOT NULL, resource TEXT NOT NULL, reset REAL NOT NULL,
                 retry_at REAL NOT NULL, remaining INTEGER NOT NULL,
                 PRIMARY KEY(scope, resource));
+            CREATE TABLE IF NOT EXISTS reconciliation (
+                source TEXT PRIMARY KEY, owner TEXT NOT NULL, reconciled REAL NOT NULL);
         """)
         with self.transaction():
             self._bind_scope()
+        # A configured owner is authoritative only after its requested scope is
+        # canonical. A legacy owner->unresolved alias still needs reconciliation.
+        self.attributed = attributed and self.scope == requested_scope
 
     def _root(self, scope: str) -> str:
         for _ in range(256):
@@ -296,12 +313,136 @@ class Budget:
         self.db.close()
 
 
+def _scope_root(db, scope: str) -> str:
+    for _ in range(256):
+        row = db.execute("SELECT target FROM alias WHERE scope=?", (scope,)).fetchone()
+        if not row:
+            return scope
+        scope = row[0]
+    raise ValueError("quota scope alias cycle")
+
+
+def reconcile_scope(directory: Path, unresolved_scope: str, owner_scope: str,
+                    *, now: float | None = None) -> dict:
+    """Replace ambiguous local evidence with one attributed bootstrap boundary."""
+    if unresolved_scope == owner_scope:
+        raise ValueError("a configured GitHub quota owner is required")
+    now = time.time() if now is None else now
+    private_directory(directory)
+    path = directory / "admission.sqlite3"
+    if not path.is_file() or path.is_symlink():
+        return {"state": "no_state"}
+    if path.stat().st_uid != os.getuid():
+        raise ValueError("transport state file is not owned by this user")
+    db = sqlite3.connect(path, timeout=2, isolation_level=None)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("CREATE TABLE IF NOT EXISTS reconciliation ("
+                   "source TEXT PRIMARY KEY,owner TEXT NOT NULL,reconciled REAL NOT NULL)")
+        receipt = db.execute(
+            "SELECT owner FROM reconciliation WHERE source=?", (unresolved_scope,)
+        ).fetchone()
+        if receipt:
+            if receipt[0] != owner_scope:
+                raise ValueError("quota state is reconciled to a different configured owner")
+            db.execute("COMMIT")
+            return {"state": "already_reconciled"}
+        source_root = _scope_root(db, unresolved_scope)
+        owner_root = _scope_root(db, owner_scope)
+        if source_root == owner_scope and owner_root == owner_scope:
+            db.execute("INSERT OR REPLACE INTO reconciliation VALUES(?,?,?)",
+                       (unresolved_scope, owner_scope, now))
+            db.execute("COMMIT")
+            return {"state": "already_reconciled"}
+
+        tables = ("quota", "reservation", "binding", "alias", "revalidation",
+                  "admission_history", "pacing")
+        scopes = {unresolved_scope, owner_scope, source_root, owner_root}
+        for table in tables:
+            columns = ("scope", "target") if table == "alias" else ("scope",)
+            for column in columns:
+                scopes.update(row[0] for row in db.execute(
+                    f"SELECT DISTINCT {column} FROM {table}"
+                ).fetchall())
+        source_component = {scope for scope in scopes if _scope_root(db, scope) == source_root}
+        owner_component = {scope for scope in scopes if _scope_root(db, scope) == owner_root}
+        if source_root != owner_root:
+            owner_has_state = any(
+                db.execute(f"SELECT 1 FROM {table} WHERE scope=? LIMIT 1", (scope,)).fetchone()
+                for scope in owner_component
+                for table in ("quota", "reservation", "binding", "revalidation",
+                              "admission_history", "pacing")
+            )
+            if owner_has_state:
+                raise ValueError("configured quota owner already has independent state")
+        component = source_component | owner_component | {unresolved_scope, owner_scope}
+        reservation_count = sum(db.execute(
+            "SELECT COUNT(*) FROM reservation WHERE scope=?", (scope,)
+        ).fetchone()[0] for scope in component)
+        if reservation_count:
+            raise Deferred("quota reconciliation requires no active or uncertain requests")
+
+        cooldowns: dict[str, tuple[float, int]] = {}
+        for scope in component:
+            for resource, blocked_until, quota_limit in db.execute(
+                "SELECT resource,blocked_until,quota_limit FROM quota WHERE scope=?", (scope,)
+            ).fetchall():
+                if blocked_until > now:
+                    previous = cooldowns.get(resource, (0.0, quota_limit))
+                    cooldowns[resource] = (max(previous[0], blocked_until),
+                                           min(previous[1], quota_limit))
+        bindings = sum(db.execute(
+            "SELECT COUNT(*) FROM binding WHERE scope=?", (scope,)
+        ).fetchone()[0] for scope in component)
+        for scope in component:
+            for table in ("quota", "revalidation", "admission_history", "pacing"):
+                db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
+        for scope in component:
+            db.execute("DELETE FROM alias WHERE scope=? OR target=?", (scope, scope))
+        for scope in component - {owner_scope}:
+            db.execute("INSERT OR REPLACE INTO alias VALUES(?,?)", (scope, owner_scope))
+        for scope in component:
+            db.execute("UPDATE binding SET scope=? WHERE scope=?", (owner_scope, scope))
+        for resource, (blocked_until, quota_limit) in cooldowns.items():
+            db.execute(
+                "INSERT OR REPLACE INTO quota VALUES(?,?,?,?,?,?,?)",
+                (owner_scope, resource, 0, blocked_until, now, blocked_until, quota_limit),
+            )
+        db.execute("INSERT INTO reconciliation VALUES(?,?,?)",
+                   (unresolved_scope, owner_scope, now))
+        db.execute("COMMIT")
+        return {"state": "reconciled", "bindings_rebound": bindings,
+                "cooldowns_preserved": len(cooldowns)}
+    except BaseException:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
-    if sys.argv[1:] != ["status"]:
+    if sys.argv[1:] not in (["status"], ["reconcile"]):
         raise SystemExit(2)
     try:
-        print(json.dumps(admission_status(Path(os.environ.get(
+        directory = Path(os.environ.get(
             "AIDEVOPS_GH_TRANSPORT_STATE_DIR", str(Path.home() / ".aidevops/state/gh-transport"),
-        )).absolute(), scope_key("github.com"))))
-    except (OSError, ValueError, sqlite3.Error):
+        )).absolute()
+        owner, attributed = quota_owner()
+        if sys.argv[1] == "status":
+            print(json.dumps(admission_status(directory, scope_key("github.com", owner),
+                                              attributed=attributed)))
+        else:
+            if not attributed:
+                raise ValueError("set AIDEVOPS_GH_QUOTA_OWNER before reconciliation")
+            result = reconcile_scope(directory, scope_key("github.com", "unresolved"),
+                                     scope_key("github.com", owner))
+            print(json.dumps(result))
+    except Deferred as exc:
+        print(json.dumps({"state": "blocked", "reason": str(exc)}))
+        raise SystemExit(75)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        if sys.argv[1:] == ["reconcile"]:
+            print(json.dumps({"state": "error", "reason": str(exc)}))
+            raise SystemExit(2)
         print('{"state":"unknown"}')
