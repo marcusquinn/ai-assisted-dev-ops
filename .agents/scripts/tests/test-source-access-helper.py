@@ -243,7 +243,8 @@ class SourceAccessHelperTests(unittest.TestCase):
     def test_github_reader_rejects_ambiguous_json_and_sanitizes_transport_failures(self) -> None:
         core = HELPER._SOURCE_CORE
         reader = core.GitHubIssueReader("fixture/repo", 123, "synthetic-private-token")
-        for content in (b'{"number":123,"number":124}', b'{"number":NaN}', b'\xff', b'{broken'):
+        for content in (b'{"number":123,"number":124}', b'{"number":NaN}', b'\xff', b'{broken',
+                        b'{"number":123,"extra":1e400}'):
             response = self._github_response({})
             response.read.return_value = content
             with (mock.patch.object(core, "_github_tls_context"),

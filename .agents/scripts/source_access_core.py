@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import pwd
 import re
@@ -103,6 +104,12 @@ def _github_json_constant(_value: str) -> None:
     raise SourceAccessError("GitHub verification returned invalid JSON")
 
 
+def _github_json_float(raw: str) -> float:
+    value = float(raw)
+    _require_source(math.isfinite(value), "GitHub verification returned invalid JSON")
+    return value
+
+
 def _github_response_json(response: http.client.HTTPResponse) -> Any:
     # Never expose response bodies, Location, authentication errors or credentials.
     _require_source(response.status == 200, "GitHub verification failed; no authority was issued")
@@ -113,7 +120,7 @@ def _github_response_json(response: http.client.HTTPResponse) -> Any:
     content = response.read(GITHUB_RESPONSE_BYTES + 1)
     _require_source(len(content) <= GITHUB_RESPONSE_BYTES, "GitHub verification response exceeds the limit")
     return json.loads(content.decode("utf-8"), object_pairs_hook=_github_json_object,
-                      parse_constant=_github_json_constant)
+                      parse_constant=_github_json_constant, parse_float=_github_json_float)
 
 
 @dataclass(frozen=True)
