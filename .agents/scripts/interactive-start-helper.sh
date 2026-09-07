@@ -16,6 +16,11 @@ Claims the issue for interactive implementation, runs the pre-edit loop check,
 validates and enters the linked worktree selected by pre-edit, refreshes the
 claim with that worktree, and starts full-loop there. Foreground is the default;
 --background requires explicit user background intent.
+
+Before approval, repeat --source-path <repo-relative-file> to prepare a powerless
+source proposal in the intended linked worktree. This mode does not claim the
+issue or start implementation. It requires the live OpenCode session environment
+and prints one human-owned bundled approval command; it never invokes sudo.
 EOF
 	return 0
 }
@@ -122,6 +127,7 @@ _interactive_start_parse_args() {
 	_INTERACTIVE_START_AUTO_DISPATCH=0
 	_INTERACTIVE_START_BACKGROUND=0
 	_INTERACTIVE_START_HELP_REQUESTED=0
+	_INTERACTIVE_START_SOURCE_PATHS=()
 	while [[ $# -gt 0 ]]; do
 		local arg="$1"
 		shift
@@ -154,6 +160,14 @@ _interactive_start_parse_args() {
 			shift
 			;;
 		--auto-dispatch) _INTERACTIVE_START_AUTO_DISPATCH=1 ;;
+		--source-path)
+			if [[ $# -eq 0 || -z "$1" || "$1" == /* || "$1" == ".." || "$1" == ../* || "$1" == */../* || "$1" == */.. ]]; then
+				printf 'ERROR: --source-path requires a repository-relative candidate\n' >&2
+				return 2
+			fi
+			_INTERACTIVE_START_SOURCE_PATHS+=("$1")
+			shift
+			;;
 		--background | --bg) _INTERACTIVE_START_BACKGROUND=1 ;;
 		--help | -h)
 			_INTERACTIVE_START_HELP_REQUESTED=1
@@ -173,10 +187,45 @@ _interactive_start_parse_args() {
 	return 0
 }
 
+_interactive_start_prepare_sources() {
+	local session_id="${AIDEVOPS_OPENCODE_SESSION_ID:-${OPENCODE_SESSION_ID:-}}"
+	if [[ -z "$session_id" || -z "${AIDEVOPS_SOURCE_CONTEXT_SOCKET:-}" || "$_INTERACTIVE_START_BACKGROUND" -ne 0 ]]; then
+		printf 'ERROR: source preflight requires a live interactive OpenCode context; no approval was issued\n' >&2
+		return 1
+	fi
+	local pre_edit_output=""
+	pre_edit_output=$(pre-edit-check.sh --loop-mode --task "$_INTERACTIVE_START_TASK" 2>&1) || {
+		printf '%s\n' "$pre_edit_output" >&2
+		return 1
+	}
+	local worktree_path=""
+	worktree_path=$(_interactive_start_resolve_worktree "$pre_edit_output") || return 1
+	local proposal_args=(propose --session "$session_id" --repo "$_INTERACTIVE_START_REPO" --issue "$_INTERACTIVE_START_ISSUE"
+		--reason 'secret-bearing basename' --context-socket "$AIDEVOPS_SOURCE_CONTEXT_SOCKET")
+	local candidate=""
+	for candidate in "${_INTERACTIVE_START_SOURCE_PATHS[@]}"; do
+		proposal_args+=(--path "$worktree_path/$candidate")
+	done
+	local proposal_id=""
+	proposal_id=$("${SCRIPT_DIR}/source-access-helper.sh" "${proposal_args[@]}") || return 1
+	if [[ ! "$proposal_id" =~ ^[a-f0-9]{64}$ ]]; then
+		printf 'ERROR: source preflight did not return a valid powerless proposal\n' >&2
+		return 1
+	fi
+	printf 'SOURCE_PROPOSAL_READY=%s\nWORKTREE_PATH=%s\n' "$proposal_id" "$worktree_path"
+	printf 'Human terminal: aidevops approve issue %q %q --source-proposal %q\n' \
+		"$_INTERACTIVE_START_ISSUE" "$_INTERACTIVE_START_REPO" "$proposal_id"
+	return 0
+}
+
 main() {
 	_interactive_start_parse_args "$@" || return $?
 	if [[ "$_INTERACTIVE_START_HELP_REQUESTED" -eq 1 ]]; then
 		return 0
+	fi
+	if [[ -n "${_INTERACTIVE_START_SOURCE_PATHS[*]:-}" ]]; then
+		_interactive_start_prepare_sources
+		return $?
 	fi
 	local issue="$_INTERACTIVE_START_ISSUE"
 	local repo="$_INTERACTIVE_START_REPO"

@@ -3,9 +3,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   linkSync,
   mkdtempSync,
@@ -18,6 +20,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import {
   SOURCE_ACCESS_REASON,
@@ -28,6 +31,7 @@ import {
   verifySourceAccessReceipt,
 } from "../source-access-approval.mjs";
 import { createQualityHooks } from "../quality-hooks.mjs";
+import { createSourceAccessRuntime } from "../source-access-runtime.mjs";
 
 const BASE = {
   tool: "read",
@@ -456,7 +460,108 @@ test("the loaded verifier accepts only the exact signed receipt", () => {
   }
 });
 
-async function checkSignedManifest(inLinkedWorktree) {
+test("canonical source payload matches the Python broker for Unicode paths", () => {
+  const payload = { path: "/repo/secret-\u00e9.py", marker: "\u007f", astral: "\ud834\udd1e" };
+  const expected = execFileSync("python3", ["-I", "-B", "-c",
+    'import json,sys; print(json.dumps(json.loads(sys.argv[1]),sort_keys=True,separators=(",",":")),end="")',
+    JSON.stringify(payload)], { encoding: "utf8" });
+  assert.equal(canonicalReceiptPayload(payload), expected);
+});
+
+function manifestFixtureProtocol(bound) {
+  const version = bound ? "v3" : "v2";
+  return {
+    payloadSchema: `aidevops-source-access-approval/${version}`,
+    receiptSchema: `aidevops-source-access-receipt/${version}`,
+    thirdPath: bound ? "secret-third-\u00e9.sh" : "secret-third.sh",
+  };
+}
+
+function manifestCliVerifier({ root, stateDir, key, sessionId, now, socketPath }) {
+  const configDir = join(root, "cli-config");
+  mkdirSync(configDir, { mode: 0o700 });
+  writeFileSync(join(configDir, "source-access.pub"), readFileSync(`${key}.pub`), { mode: 0o644 });
+  const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+  const script = 'import runpy,sys,json,os; from pathlib import Path; from unittest.mock import patch; '
+    + 'h=runpy.run_path(sys.argv[1]); '
+    + 'cfg=h["Config"](config_dir=Path(sys.argv[2]),state_dir=Path(sys.argv[3]),trust_uid=os.getuid()); '
+    + 'patch.object(h["time"],"time",return_value=int(sys.argv[4])).start(); '
+    + 'args=h["build_parser"]().parse_args(json.loads(sys.argv[5])); '
+    + 'sys.exit(h["_run_verify"](args,cfg,os.getuid(),Path.home()))';
+  return async (filePath, options = {}) => {
+    const argv = ["verify", "--session", options.sessionId ?? sessionId, "--path", filePath,
+      "--reason", SOURCE_ACCESS_REASON, "--context-socket", options.socketPath ?? socketPath];
+    const { stdout } = await promisify(execFile)("python3", ["-I", "-B", "-c", script,
+      helper, configDir, stateDir, String(options.now ?? now), JSON.stringify(argv)], { timeout: 15000 });
+    assert.equal(stdout.trim(), "VERIFIED");
+  };
+}
+
+function revokeManifestFixture(stateDir, approvalId) {
+  const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+  const script = 'import runpy,sys,os; from pathlib import Path; h=runpy.run_path(sys.argv[1]); '
+    + 'cfg=h["Config"](config_dir=Path(sys.argv[2]).parent/"cli-config",state_dir=Path(sys.argv[2]),trust_uid=os.getuid()); '
+    + 'h["revoke_approval"](cfg,approval_id=sys.argv[3],uid=os.getuid())';
+  execFileSync("python3", ["-I", "-B", "-c", script, helper, stateDir, approvalId], { timeout: 15000 });
+}
+
+function manifestFixtureStorage(stateDir, uid, approvalId, atomic) {
+  const bundle = join(stateDir, "bundles", String(uid), approvalId);
+  const layout = {
+    false: { snapshots: join(stateDir, "snapshots", String(uid)), receipts: join(stateDir, "approvals", String(uid)),
+      name: `${approvalId}.json`, prefix: `${approvalId}-`, fields: {} },
+    true: { snapshots: bundle, receipts: bundle, name: "receipt.json", prefix: "",
+      fields: { snapshot_layout: "atomic-directory/v1" } },
+  }[String(atomic)];
+  mkdirSync(layout.snapshots, { recursive: true, mode: 0o755 });
+  mkdirSync(layout.receipts, { recursive: true, mode: 0o755 });
+  if (atomic) mkdirSync(join(stateDir, "revocations", String(uid)), { recursive: true, mode: 0o755 });
+  return {
+    fields: layout.fields,
+    receiptPath: join(layout.receipts, layout.name),
+    snapshotPath: (entryId) => join(layout.snapshots, `${layout.prefix}${entryId}.source`),
+  };
+}
+
+async function issueBundleFixture(root, key, stateDir, proposalId) {
+  const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+  // Real issuer, signatures, journals and native runtime IPC; only GitHub and
+  // root ownership are synthetic. No installed broker or actual credential is used.
+  const script = `import runpy,sys,json,os,shutil,subprocess
+from pathlib import Path
+from unittest.mock import patch
+h=runpy.run_path(sys.argv[1]); c=h['_SOURCE_CORE']; root=Path(sys.argv[2]); uid=os.getuid()
+cfg=c.Config(config_dir=root/'issuer-config',state_dir=Path(sys.argv[4]),request_root=root/'requests',trust_uid=uid)
+cfg.private_key.parent.mkdir(parents=True,mode=0o700)
+shutil.copyfile(sys.argv[3],cfg.private_key); cfg.private_key.chmod(0o600); h['setup_key_material'](cfg)
+home=root/'fixture-home'; key=home/'.aidevops'/'approval-keys'/'private'/'approval.key'
+key.parent.mkdir(parents=True,mode=0o700)
+subprocess.run([h['SSH_KEYGEN'],'-q','-t','ed25519','-N','','-f',str(key)],check=True)
+actor={'id':7,'node_id':'U_fixture','login':'fixture','type':'User'}; created='2026-09-01T12:00:00Z'
+issue={'id':1234,'node_id':'I_fixture','number':123,'user':actor,'author_association':'OWNER','created_at':created,
+       'title':'Fixture scope','body':'Synthetic issue acceptance','state':'open','locked':True,
+       'active_lock_reason':'resolved','labels':[],'assignees':[actor],'milestone':None}
+comments=[]; timeline=[{'id':20,'event':'locked','created_at':created,'actor':actor}]
+def action(uid,reader,operation,body=b''):
+    if operation=='publish': comments.append({'id':99,'node_id':'C_fixture','user':actor,'author_association':'OWNER',
+                                              'created_at':created,'body':body.decode('utf-8')})
+confirmed=[]; spec=h['ApprovalSpec'](sys.argv[5],home,uid,3600,1800000000,lambda scope: confirmed.append(scope) is None)
+with patch.object(c,'github_credential_for_user',return_value='synthetic-fixture'), \\
+     patch.object(c.GitHubIssueReader,'issue',return_value=issue), \\
+     patch.object(c.GitHubIssueReader,'collection',side_effect=lambda kind: comments if kind=='comments' else timeline), \\
+     patch.object(c,'github_issue_action',side_effect=action):
+    payload=h['approve_bundle'](cfg,spec,'fixture/repo',123)
+assert len(confirmed)==1 and len(comments)==1
+receipt=c.manifest_receipt_paths(cfg,uid)[0]; result=json.loads(receipt.read_text()); result['receiptPath']=str(receipt)
+print(json.dumps(result))
+`;
+  const { stdout } = await promisify(execFile)("python3", ["-I", "-B", "-c", script,
+    helper, root, key, stateDir, proposalId], { timeout: 20000 });
+  return JSON.parse(stdout);
+}
+
+async function checkSignedManifest(inLinkedWorktree, bound = false, atomic = false) {
+  const protocol = manifestFixtureProtocol(bound);
   const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
   mkdirSync(tempParent, { recursive: true });
   const root = mkdtempSync(join(tempParent, "source-access-manifest-node-test-"));
@@ -468,6 +573,9 @@ async function checkSignedManifest(inLinkedWorktree) {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const sessionId = "ses_manifest_123456";
   const now = 1_800_000_000;
+  let runtime;
+  let runtimeRoot;
+  const session = { id: sessionId, directory: canonicalRepo, projectID: "fixture", time: { created: 1000 } };
 
   try {
     mkdirSync(canonicalRepo);
@@ -481,7 +589,7 @@ async function checkSignedManifest(inLinkedWorktree) {
       execFileSync("/usr/bin/git", ["-C", canonicalRepo, "worktree", "add", "--detach", "--quiet", repo]);
     }
     execFileSync("git", ["-C", otherRepo, "init", "--quiet"]);
-    const relativePaths = ["secret-helper.sh", "secret-other.sh", "secret-third.sh"];
+    const relativePaths = ["secret-helper.sh", "secret-other.sh", protocol.thirdPath];
     const paths = relativePaths.map((name, index) => {
       const filePath = join(repo, name);
       writeFileSync(filePath, `source-${index}\n`);
@@ -498,16 +606,43 @@ async function checkSignedManifest(inLinkedWorktree) {
       "-q", "-t", "ed25519", "-N", "", "-C", "source-access@aidevops.sh", "-f", key,
     ]);
 
-    const approvalId = createHash("sha256")
+    const fsmonitor = join(root, "fsmonitor-fixture");
+    writeFileSync(fsmonitor, "#!/bin/sh\ntouch fsmonitor-ran\nprintf 'fixture\\0'\n", { mode: 0o700 });
+    const gitConfig = join(canonicalRepo, ".git", "config");
+    writeFileSync(gitConfig, `${readFileSync(gitConfig, "utf8")}\n[core]\n\tfsmonitor = ${fsmonitor}\n`);
+    let proposal;
+    let proposalId;
+    if (bound) {
+      runtimeRoot = mkdtempSync(join(tempParent, "b"));
+      const ownerScripts = join(root, "owner-scripts");
+      mkdirSync(ownerScripts);
+      writeFileSync(join(ownerScripts, "worktree-helper.sh"), '#!/bin/sh\nprintf "VERIFIED\\n"\n', { mode: 0o700 });
+      runtime = createSourceAccessRuntime({ directory: canonicalRepo, scriptsDir: ownerScripts,
+        tempDir: runtimeRoot, client: { session: { get: async () => ({ data: session }) } } });
+      const env = await runtime.environment(sessionId);
+      const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+      const script = 'import runpy,sys,json,os,io; from pathlib import Path; '
+        + 'from contextlib import redirect_stdout; from unittest.mock import patch; '
+        + 'h=runpy.run_path(sys.argv[1]); c=h["_SOURCE_CORE"]; '
+        + 'cfg=c.Config(request_root=Path(sys.argv[2])); '
+        + 'a=h["build_parser"]().parse_args(["propose","--session",sys.argv[3],"--reason",c.OVERRIDABLE_REASON,'
+        + '"--issue-snapshot-sha256","a"*64,"--context-socket",sys.argv[5]]'
+        + '+[arg for path in json.loads(sys.argv[4]) for arg in ("--path",path)]); out=io.StringIO()\n'
+        + 'with redirect_stdout(out),patch("time.time",return_value=1800000000): h["_run_propose"](a,cfg,os.getuid(),Path.home())\n'
+        + 'i=out.getvalue().strip(); b=c.load_source_proposal(cfg,Path.home(),i,os.getuid()); '
+        + 'c.revalidate_source_proposal_context(b,os.getuid()); '
+        + 'print(json.dumps({"id":i,"body":b}))';
+      const result = await promisify(execFile)("python3", ["-I", "-B", "-c", script, helper,
+        join(root, "requests"), sessionId, JSON.stringify(paths), env.AIDEVOPS_SOURCE_CONTEXT_SOCKET], { timeout: 15000 });
+      ({ id: proposalId, body: proposal } = JSON.parse(result.stdout));
+    }
+    let approvalId = bound ? proposalId : createHash("sha256")
       .update([sessionId, String(uid), repo, SOURCE_ACCESS_REASON, ...paths].join("\0"), "utf8")
       .digest("hex");
-    const snapshotDir = join(stateDir, "snapshots", String(uid));
-    const receiptDir = join(stateDir, "approvals", String(uid));
-    mkdirSync(snapshotDir, { recursive: true, mode: 0o755 });
-    mkdirSync(receiptDir, { recursive: true, mode: 0o755 });
-    const entries = paths.map((filePath, index) => {
+    const storage = manifestFixtureStorage(stateDir, uid, approvalId, atomic);
+    let entries = paths.map((filePath, index) => {
       const entryId = createHash("sha256").update(filePath, "utf8").digest("hex").slice(0, 32);
-      const snapshotPath = join(snapshotDir, `${approvalId}-${entryId}.source`);
+      const snapshotPath = storage.snapshotPath(entryId);
       const content = readFileSync(filePath);
       writeFileSync(snapshotPath, content, { mode: 0o444 });
       return {
@@ -517,8 +652,10 @@ async function checkSignedManifest(inLinkedWorktree) {
         snapshot_path: snapshotPath,
       };
     });
-    const payload = {
-      schema: "aidevops-source-access-approval/v2",
+    let payload = {
+      schema: protocol.payloadSchema,
+      ...storage.fields,
+      ...(bound ? { proposal, proposal_id: proposalId, issue_snapshot_sha256: proposal.issue_snapshot_sha256 } : {}),
       approval_id: approvalId,
       request_id: approvalId,
       session_id: sessionId,
@@ -535,13 +672,22 @@ async function checkSignedManifest(inLinkedWorktree) {
     execFileSync("/usr/bin/ssh-keygen", [
       "-Y", "sign", "-f", key, "-n", "aidevops-source-access-v1", payloadPath,
     ]);
-    const signature = readFileSync(`${payloadPath}.sig`, "utf8");
-    const receiptPath = join(receiptDir, `${approvalId}.json`);
+    let signature = readFileSync(`${payloadPath}.sig`, "utf8");
+    let receiptPath = storage.receiptPath;
     writeFileSync(
       receiptPath,
-      JSON.stringify({ schema: "aidevops-source-access-receipt/v2", payload, signature }),
+      JSON.stringify({ schema: protocol.receiptSchema, payload, signature }),
       { mode: 0o644 },
     );
+    if (atomic) {
+      // Remove the synthetic grant first: it must not mask an invalid issuer
+      // receipt or let either consumer succeed through a second capability.
+      rmSync(dirname(receiptPath), { recursive: true, force: true });
+      ({ payload, signature, receiptPath } = await issueBundleFixture(root, key, stateDir, proposalId));
+      approvalId = payload.approval_id;
+      entries = payload.entries;
+      proposal = payload.proposal;
+    }
     const baseArgs = {
       sessionId,
       reason: SOURCE_ACCESS_REASON,
@@ -551,7 +697,10 @@ async function checkSignedManifest(inLinkedWorktree) {
       trustUid: uid,
       stateDir,
       publicKeyPath: `${key}.pub`,
+      sourceContext: await runtime?.resolve(sessionId, repo),
     };
+    const verifyCli = manifestCliVerifier({ root, stateDir, key, sessionId, now: now + 1,
+      socketPath: proposal?.runtime_context.socket_path ?? "" });
     const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "scripts");
     const logsDir = join(root, "logs");
     mkdirSync(logsDir);
@@ -561,17 +710,61 @@ async function checkSignedManifest(inLinkedWorktree) {
       repositoryDir: canonicalRepo,
       verifySourceAccessReceipt: (options) => verifySourceAccessReceipt({ ...baseArgs, ...options }),
       sourceAccessBrokerMatches: () => true,
+      sourceAccessRuntime: runtime,
       sourceAccessRequestRun: () => {
         throw new Error("an exact signed manifest must not generate a per-path request");
       },
     });
     for (const filePath of paths) {
+      await verifyCli(filePath);
       const approval = verifySourceAccessReceipt({ ...baseArgs, filePath });
       assert.ok(approval);
       assert.equal(readFileSync(approval.approvedPath, "utf8"), readFileSync(filePath, "utf8"));
       const output = { args: { filePath } };
       await hooks.toolExecuteBefore({ tool: "read", sessionID: sessionId, callID: filePath }, output);
       assert.equal(output.args.filePath, approval.approvedPath);
+    }
+    assert.equal(existsSync(join(repo, "fsmonitor-ran")), false, "source verification must not execute repository commands");
+    assert.equal(existsSync(join(canonicalRepo, "fsmonitor-ran")), false, "runtime queries must not execute repository commands");
+    if (bound) {
+      await assert.rejects(verifyCli(paths[0], { socketPath: "" }));
+      await assert.rejects(verifyCli(paths[0], { sessionId: "ses_other_manifest" }));
+      await assert.rejects(verifyCli(paths[0], { now: now + 3600 }));
+      await assert.rejects(verifyCli(extraPath));
+      for (const [field, value] of [["runtime_instance_id", "f".repeat(32)], ["runtime_pid", process.pid + 1],
+        ["session_created_at", 2000], ["project_id", "other"]]) {
+        assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0],
+          sourceContext: { ...baseArgs.sourceContext, [field]: value } }), false, field);
+      }
+      assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0], sourceContext: undefined }), false);
+      session.time.created = 2000;
+      await assert.rejects(verifyCli(paths[0]));
+      await assert.rejects(hooks.toolExecuteBefore({ tool: "read", sessionID: sessionId, callID: "new-generation" },
+        { args: { filePath: paths[0] } }), /secret-read-guard/);
+      const helper = fileURLToPath(new URL("../../../scripts/source-access-helper.py", import.meta.url));
+      const recheck = 'import runpy,sys,json,os; c=runpy.run_path(sys.argv[1])["_SOURCE_CORE"]; '
+        + 'c.revalidate_source_proposal_context(json.loads(sys.argv[2]),os.getuid())';
+      await assert.rejects(promisify(execFile)("python3", ["-I", "-B", "-c", recheck,
+        helper, JSON.stringify(proposal)], { timeout: 10000 }), /proposal runtime changed/);
+      session.time.created = 1000;
+      const provenance = createSourceAccessMutationProvenance({ repositoryDir: canonicalRepo,
+        now: () => now + 1, verify: (options) => verifySourceAccessReceipt({ ...baseArgs, ...options }) });
+      provenance.rememberApproval({ sessionId, filePath: paths[0],
+        approval: verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }) });
+      const before = await runtime.resolve(sessionId, repo);
+      provenance.beginMutation({ sessionId, callId: "bound-write", sourceContextForPath: () => before,
+        mutations: [{ filePath: paths[0], kind: "write", content: "observed update\n" }] });
+      writeFileSync(paths[0], "observed update\n");
+      const after = await runtime.resolve(sessionId, repo);
+      provenance.finishMutation({ sessionId, callId: "bound-write", succeeded: true, sourceContextForPath: () => after });
+      const read = { sessionId, callId: "bound-read", filePath: paths[0], reason: SOURCE_ACCESS_REASON,
+        args: { filePath: paths[0] }, sourceContext: await runtime.resolve(sessionId, repo) };
+      assert.ok(provenance.authorizeRead(read));
+      const output = { output: "original snapshot" };
+      provenance.finishRead(sessionId, "bound-read", output, true);
+      assert.equal(output.output, "observed update\n");
+      assert.equal(provenance.authorizeRead({ ...read, callId: "no-context", sourceContext: undefined }), false);
+      writeFileSync(paths[0], "source-0\n");
     }
     if (inLinkedWorktree) {
       const sibling = join(root, "unapproved-sibling");
@@ -607,15 +800,22 @@ async function checkSignedManifest(inLinkedWorktree) {
     writeFileSync(paths[1], "altered\n");
     assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }), false);
     writeFileSync(paths[1], "source-1\n");
-    rmSync(receiptPath);
+    revokeManifestFixture(stateDir, approvalId);
+    assert.equal(existsSync(receiptPath), false);
+    assert.ok(entries.every((entry) => !existsSync(entry.snapshot_path)));
+    await assert.rejects(verifyCli(paths[0]));
     assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }), false);
   } finally {
+    runtime?.close();
+    if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 test("one signed manifest authorizes only three exact repository-bound paths", () => checkSignedManifest(false));
 test("a canonical app context consumes its exact linked-worktree manifest without per-path requests", () => checkSignedManifest(true));
+test("a V3 manifest binds native proposal context to the consuming runtime and fresh session generation", () => checkSignedManifest(true, true));
+test("an atomic V3 manifest is consumed by CLI and Read and withdrawn as one bundle", () => checkSignedManifest(true, true, true));
 
 test("one approval survives verified Write, Edit, and apply_patch cycles", () => {
   const fixture = mutationFixture();

@@ -1501,6 +1501,16 @@ cmd_setup() {
 # ── Approve Issue ────────────────────────────────────────────────────────────
 
 cmd_issue_approved() {
+	# A bundle uses the immutable broker's single confirmation, not the legacy
+	# issue-only prompt followed by a second source approval ceremony.
+	if [[ "${3:-}" == "--source-proposal" ]]; then
+		if [[ "$#" -ne 4 && "$#" -ne 6 ]] || [[ "$#" -eq 6 && "${5:-}" != "--ttl" ]]; then
+			printf '%s\n' 'Usage: aidevops approve issue <number> <owner/repo> --source-proposal <id> [--ttl 12h]' >&2
+			return 2
+		fi
+		"${SCRIPT_DIR}/source-access-helper.sh" approve-bundle "$4" --repo "$2" --issue "$1" --ttl "${6:-12h}"
+		return $?
+	fi
 	_approve_targets "issue" "$@"
 	return $?
 }

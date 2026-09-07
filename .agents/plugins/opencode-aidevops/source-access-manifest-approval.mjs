@@ -5,12 +5,15 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { BOUND_RECEIPT_SCHEMA, BOUND_PAYLOAD_SCHEMA, boundManifestIdentity } from "./source-access-bound-manifest.mjs";
+import { sourceAccessGit } from "./source-access-git.mjs";
 
 const MANIFEST_RECEIPT_SCHEMA = "aidevops-source-access-receipt/v2";
 const MANIFEST_PAYLOAD_SCHEMA = "aidevops-source-access-approval/v2";
 const MAX_TTL_SECONDS = 12 * 60 * 60;
 const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 const MAX_MANIFEST_ENTRIES = 32;
+const ATOMIC_BUNDLE_LAYOUT = "atomic-directory/v1";
 const DEFAULT_STATE_DIR = "/var/run/aidevops/source-access";
 const DEFAULT_PUBLIC_KEY = "/etc/aidevops/source-access/source-access.pub";
 
@@ -91,14 +94,14 @@ function repositoryContextMatches(repositoryDir, requestedRoot, git, gitRun) {
   if (contextRoot === requestedRoot) return true;
   const options = { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15000 };
   const commonDir = (root) => realpathSync(resolve(root, String(
-    gitRun(git, ["-C", root, "rev-parse", "--git-common-dir"], options),
+    sourceAccessGit(git, ["-C", root, "rev-parse", "--git-common-dir"], options, gitRun),
   ).trim()));
   if (commonDir(contextRoot) !== commonDir(requestedRoot)) return false;
   // The ambient app may remain in the canonical checkout. Require an actual
   // registered worktree in that same repository, not an arbitrary directory.
   // This proves context only: the signed payload still binds the exact root,
   // paths, session, user, bytes and snapshots below. No grant is transferred.
-  const worktrees = String(gitRun(git, ["-C", contextRoot, "worktree", "list", "--porcelain", "-z"], options));
+  const worktrees = String(sourceAccessGit(git, ["-C", contextRoot, "worktree", "list", "--porcelain", "-z"], options, gitRun));
   return worktrees.split("\0").includes(`worktree ${requestedRoot}`);
 }
 
@@ -144,7 +147,9 @@ function approvedSnapshot(entries, context) {
   let approvedPath = "";
   for (const { entry, path } of entries) {
     const entryId = createHash("sha256").update(path, "utf8").digest("hex").slice(0, 32);
-    const snapshotPath = join(
+    const snapshotPath = context.atomicBundle
+      ? join(context.stateDir, "bundles", String(context.uid), context.approvalId, `${entryId}.source`)
+      : join(
       context.stateDir,
       "snapshots",
       String(context.uid),
@@ -162,23 +167,27 @@ function approvedSnapshot(entries, context) {
 }
 
 function validateManifestReceipt(receiptName, context) {
-  const receiptPath = join(context.approvalsDir, receiptName);
+  const receiptPath = context.receiptPath;
   context.requireValidReceipt(context.trustedRegularFile(receiptPath, context.trustUid));
+  context.requireValidReceipt(statSync(receiptPath).size <= 1024 * 1024);
   const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
   const payload = receipt?.payload;
-  context.requireValidReceipt(receipt?.schema === MANIFEST_RECEIPT_SCHEMA);
-  context.requireValidReceipt(payload?.schema === MANIFEST_PAYLOAD_SCHEMA);
+  const bound = receipt?.schema === BOUND_RECEIPT_SCHEMA;
+  context.requireValidReceipt(bound || receipt?.schema === MANIFEST_RECEIPT_SCHEMA);
+  context.requireValidReceipt(payload?.schema === (bound ? BOUND_PAYLOAD_SCHEMA : MANIFEST_PAYLOAD_SCHEMA));
+  context.requireValidReceipt(payload.snapshot_layout === undefined || (bound && payload.snapshot_layout === ATOMIC_BUNDLE_LAYOUT));
+  context.requireValidReceipt(context.atomicBundle === (bound && payload.snapshot_layout === ATOMIC_BUNDLE_LAYOUT));
   context.requireValidReceipt(payload.session_id === context.sessionId);
   context.requireValidReceipt(payload.uid === context.uid);
   context.requireValidReceipt(payload.reason === context.reason);
   context.requireValidReceipt(
     Array.isArray(payload.entries) &&
-      payload.entries.length >= 2 &&
+      payload.entries.length >= (bound ? 1 : 2) &&
       payload.entries.length <= MAX_MANIFEST_ENTRIES,
   );
   const entries = normalizedEntries(payload, context);
   const paths = validateEntryOrder(entries, context.requireValidReceipt);
-  const approvalId = manifestScopeId(
+  const approvalId = bound ? boundManifestIdentity(payload, context) : manifestScopeId(
     context.sessionId,
     context.uid,
     context.requestedIdentity.repoRoot,
@@ -191,6 +200,7 @@ function validateManifestReceipt(receiptName, context) {
   context.requireValidReceipt(payload.approval_id === approvalId);
   context.requireValidReceipt(payload.request_id === approvalId);
   context.requireValidReceipt(receiptName === `${approvalId}.json`);
+  context.requireValidReceipt(!context.revokedManifest(context, approvalId));
   context.requireValidReceipt(payload.repo_root === context.requestedIdentity.repoRoot);
   context.requireValidReceipt(payload.repository_id === repositoryId(context.requestedIdentity.repoRoot));
   const snapshotPath = approvedSnapshot(entries, { ...context, approvalId });
@@ -235,6 +245,7 @@ export function validatedManifestReceipt(options, dependencies) {
     gitRun = execFileSync,
     run = execFileSync,
     authorizedApprovalId = "",
+    sourceContext,
   } = options;
   const { requireValidReceipt } = dependencies;
   requireValidReceipt(/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId));
@@ -247,13 +258,13 @@ export function validatedManifestReceipt(options, dependencies) {
   requireValidReceipt(requestedIdentity);
   if (repositoryDir) requireValidReceipt(repositoryContextMatches(repositoryDir, requestedIdentity.repoRoot, git, gitRun));
   const approvalsDir = join(stateDir, "approvals", String(uid));
-  requireValidReceipt(dependencies.trustedDirectory(approvalsDir, trustUid));
   requireValidReceipt(dependencies.trustedDirectory(dirname(publicKeyPath), trustUid));
   requireValidReceipt(dependencies.trustedRegularFile(publicKeyPath, trustUid));
   const context = {
     ...dependencies,
     approvalsDir,
     authorizedApprovalId,
+    sourceContext,
     canonicalPath,
     git,
     gitRun,
@@ -268,9 +279,9 @@ export function validatedManifestReceipt(options, dependencies) {
     trustUid,
     uid,
   };
-  for (const receiptName of dependencies.receiptNames(approvalsDir)) {
+  for (const candidate of dependencies.receiptCandidates(context)) {
     try {
-      return validateManifestReceipt(receiptName, context);
+      return validateManifestReceipt(candidate.name, { ...context, receiptPath: candidate.path, atomicBundle: candidate.atomic });
     } catch {
       // A malformed or unrelated receipt cannot broaden access; try another exact manifest.
     }
