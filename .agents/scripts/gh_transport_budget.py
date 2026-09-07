@@ -10,11 +10,9 @@ This database coordinates local processes, not independently configured hosts.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import sqlite3
 import subprocess
-import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -315,27 +313,5 @@ def reconcile_scope(directory: Path, unresolved_scope: str, owner_scope: str,
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] not in (["status"], ["reconcile"]):
-        raise SystemExit(2)
-    try:
-        directory = Path(os.environ.get(
-            "AIDEVOPS_GH_TRANSPORT_STATE_DIR", str(Path.home() / ".aidevops/state/gh-transport"),
-        )).absolute()
-        owner, attributed = quota_owner()
-        if sys.argv[1] == "status":
-            print(json.dumps(admission_status(directory, scope_key("github.com", owner),
-                                              attributed=attributed)))
-        else:
-            if not attributed:
-                raise ValueError("set AIDEVOPS_GH_QUOTA_OWNER before reconciliation")
-            result = reconcile_scope(directory, scope_key("github.com", "unresolved"),
-                                     scope_key("github.com", owner))
-            print(json.dumps(result))
-    except Deferred as exc:
-        print(json.dumps({"state": "blocked", "reason": str(exc)}))
-        raise SystemExit(75)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        if sys.argv[1:] == ["reconcile"]:
-            print(json.dumps({"state": "error", "reason": str(exc)}))
-            raise SystemExit(2)
-        print('{"state":"unknown"}')
+    from gh_transport_budget_cli import main
+    main()
