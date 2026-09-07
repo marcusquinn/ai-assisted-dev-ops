@@ -30,6 +30,18 @@ next decision requires content. Exact reads, JSON, diffs, security, secret, and
 credential commands bypass the store and retain native output semantics. Storage
 failure also fails open to native execution rather than blocking the operation.
 
+`worker-activity-helper.sh summary` is an automatic compaction candidate because
+its successful global diagnostic can be large while the immediate decision
+normally needs counts and bounded warning/failure evidence. Run it through the
+sandbox to retain the complete private result behind an opaque ID:
+
+```bash
+output-sandbox-helper.sh run -- worker-activity-helper.sh summary
+```
+
+Use the helper directly when exact rows are required. Structured `--json` output
+continues to bypass compaction.
+
 `aidevops update` applies this contract automatically for non-TTY setup output.
 Use `--compact` to request it explicitly or `--verbose` to retain native streaming.
 The compact path verifies the setup completion sentinel before reporting success.
@@ -48,6 +60,11 @@ state is unchanged and resets after a transition. Failed-check links are emitted
 once; PR-head changes and API loss remain explicit. Exit `8` means checks are
 still pending at timeout, `1` means terminal failure, and `2` means indeterminate
 API failure. These states must not be collapsed into a generic failure.
+
+Helper discovery is also read-only: `full-loop-helper.sh help`, `--help`, and
+`COMMAND --help` print usage without starting, merging, cancelling, or otherwise
+mutating a lifecycle. Unknown commands return only a bounded diagnostic plus the
+canonical help command instead of repeating the full catalogue.
 
 ## Bounded interactive operations
 
