@@ -624,8 +624,8 @@ _full_loop_validate_release_candidates() {
 	source_pr=$(jq -er '.source_pr' <<<"$source_json") || return 1
 	source_merge=$(jq -er '.source_merge' <<<"$source_json") || return 1
 	candidate_rows=$(jq -er --arg aggregate_role "$_FULL_LOOP_RELEASE_ROLE_AGGREGATED" \
-		'[{pr:.source_pr,merge:.source_merge,role:"source"}]
-		+ [.aggregated_sources[] | {pr,merge,role:$aggregate_role}]
+		'.source_pr as $source | [{pr:.source_pr,merge:.source_merge,role:"source"}]
+		+ [.aggregated_sources[] | select(.pr != $source) | {pr,merge,role:$aggregate_role}]
 		| .[] | [.pr,.merge,.role] | @tsv' <<<"$source_json") || return 1
 	if [[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ||
 		"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ]]; then
@@ -693,7 +693,7 @@ _full_loop_persist_release_success() {
 	IFS= read -r version <"$release_path/VERSION" || return 1
 	tag_name="v${version}"
 	tag_commit=$(git -C "$release_path" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
-	aggregated_rows=$(jq -r '.aggregated_sources[] | [.pr,.merge] | @tsv' <<<"$source_json") || return 1
+	aggregated_rows=$(jq -r '.source_pr as $source | .aggregated_sources[] | select(.pr != $source) | [.pr,.merge] | @tsv' <<<"$source_json") || return 1
 	while IFS=$'\t' read -r aggregated_pr aggregated_merge; do
 		[[ -n "$aggregated_pr" ]] || continue
 		receipt_path=$(_full_loop_release_receipt_path "$repo" "$aggregated_pr") || return 1
@@ -2116,7 +2116,7 @@ _full_loop_verify_published_release() {
 	local workflow_runs_endpoint=""
 
 	[[ "$repo" == */* && "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX && "$merge_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
-	if [[ "$workflow_event" != "$_FULL_LOOP_WORKFLOW_EVENT_RELEASE" && \
+	if [[ "$workflow_event" != "$_FULL_LOOP_WORKFLOW_EVENT_RELEASE" &&
 		"$workflow_event" != "push" && "$workflow_event" != "workflow_dispatch" ]]; then
 		return 1
 	fi
@@ -2231,7 +2231,7 @@ _full_loop_parse_published_release_options() {
 			;;
 		esac
 	done
-	if [[ -z "$_FULL_LOOP_PARSED_WORKFLOW_FILE" && \
+	if [[ -z "$_FULL_LOOP_PARSED_WORKFLOW_FILE" &&
 		"$_FULL_LOOP_PARSED_WORKFLOW_EVENT" != "$_FULL_LOOP_WORKFLOW_EVENT_RELEASE" ]]; then
 		print_error "--event ${_FULL_LOOP_PARSED_WORKFLOW_EVENT} requires --workflow to bind publication evidence to an exact workflow"
 		return 1

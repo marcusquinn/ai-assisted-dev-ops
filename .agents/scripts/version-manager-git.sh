@@ -98,9 +98,13 @@ verify_remote_sync() {
 	fi
 
 	if [[ "$local_sha" != "$remote_sha" ]]; then
-		print_error "Release worktree HEAD differs from origin/$branch"
-		print_info "Discard it and create a fresh detached linked worktree from origin/$branch"
-		return 1
+		# A canonical snapshot remains valid as main advances, never as it is
+		# rewritten. The pin must still identify this exact isolated checkout.
+		if [[ "${AIDEVOPS_RELEASE_SNAPSHOT_SHA:-}" != "$local_sha" ]] ||
+			! git merge-base --is-ancestor "$local_sha" "$remote_sha"; then
+			print_error "Release checkout is neither current main nor its pinned snapshot"
+			return 1
+		fi
 	fi
 
 	print_success "Release worktree is in sync with origin/$branch"
@@ -148,6 +152,10 @@ verify_release_source_pr() {
 	local resolver="${AIDEVOPS_RELEASE_SOURCE_RESOLVER:-${SCRIPT_DIR}/release-provenance-helper.sh}"
 	local source_json=""
 	local resolver_args=(resolve-source --source-pr "$source_pr" --repo "$repo_slug" --branch "$branch")
+	if [[ -n "${AIDEVOPS_RELEASE_SNAPSHOT_SHA:-}" ]]; then
+		[[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" == "$AIDEVOPS_RELEASE_SNAPSHOT_SHA" ]] || return 1
+		resolver_args+=(--snapshot)
+	fi
 	[[ -x "$resolver" ]] || {
 		print_error "Release source provenance resolver is unavailable"
 		return 1
@@ -156,6 +164,8 @@ verify_release_source_pr() {
 	source_json=$(cd "$REPO_ROOT" && bash "$resolver" "${resolver_args[@]}") || return 1
 	VERSION_MANAGER_SOURCE_PR=$(jq -er '.source_pr' <<<"$source_json") || return 1
 	VERSION_MANAGER_SOURCE_MERGE_SHA=$(jq -er '.source_merge' <<<"$source_json") || return 1
+	VERSION_MANAGER_SNAPSHOT_BASE=$(jq -er '.snapshot_base // ""' <<<"$source_json") || return 1
+	export VERSION_MANAGER_SNAPSHOT_BASE
 	VERSION_MANAGER_AGGREGATED_SOURCES=$(jq -cr ".aggregated_sources // [] | .[] | ${_VERSION_MANAGER_SOURCE_ENTRY_JQ}" \
 		<<<"$source_json") || return 1
 	VERSION_MANAGER_EXPECTED_SOURCES=$(jq -er "
@@ -679,7 +689,8 @@ push_changes() {
 			return 1
 		fi
 		if [[ "$(git rev-parse origin/main 2>/dev/null)" != "$release_parent" ]]; then
-			if [[ -n "${AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN:-}" ]]; then
+			if [[ -n "${AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN:-}" ]] ||
+				_version_manager_is_signed_snapshot "$tag_name"; then
 				_version_manager_require_aggregate_fence || return 1
 				if _version_manager_queue_protected_main_release "$version"; then
 					case "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" in

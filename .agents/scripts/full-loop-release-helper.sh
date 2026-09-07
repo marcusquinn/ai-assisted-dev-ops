@@ -112,12 +112,26 @@ _full_loop_capture_release_authorization() {
 	local resolver="$4"
 	local expected_sources="${5:-}"
 	local authorization_json=""
-	local resolver_args=(resolve-authorization --source-pr "$source_pr" --repo "$repo" --branch main)
+	local expected_intent=""
+	local resolver_args=(resolve-authorization --snapshot --source-pr "$source_pr" --repo "$repo" --branch main)
 	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
 	authorization_json=$(cd "$release_path" && bash "$resolver" "${resolver_args[@]}") || return 1
+	if [[ -n "$expected_sources" ]]; then
+		expected_intent=$(release_authorization_intent_json "$expected_sources") || return 1
+		#aidevops:trust-boundary
+		jq -e --argjson intent "$expected_intent" '
+			.expected_sources as $sources
+			| ($intent | map(.pr) | sort) == ($sources | map(.pr) | sort)
+			and all($intent[]; . as $entry | any($sources[];
+				.pr == $entry.pr and ($entry.merge == null or .merge == $entry.merge)))
+		' <<<"$authorization_json" >/dev/null || return 1
+	fi
 	_FULL_LOOP_RESOLVED_EXPECTED_SOURCES=$(jq -er '
 		.expected_sources | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
 	' <<<"$authorization_json") || return 1
+	if [[ "$(jq -r '.mode // ""' <<<"$authorization_json")" == "snapshot" ]]; then
+		release_lane_bind_snapshot "$repo" "$source_pr" "$authorization_json" || return 1
+	fi
 	_full_loop_persist_release_authorization "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
 	return $?
 }
@@ -132,7 +146,7 @@ _full_loop_resolve_requested_release_source() {
 	local blocked_merge=""
 	local blocked_head=""
 	[[ -x "$resolver" ]] || return 1
-	local resolver_args=(resolve-source --source-pr "$source_pr" --repo "$repo" --branch main)
+	local resolver_args=(resolve-source --snapshot --source-pr "$source_pr" --repo "$repo" --branch main)
 	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
 	if ! _FULL_LOOP_RESOLVED_SOURCE_JSON=$(cd "$release_path" && bash "$resolver" "${resolver_args[@]}"); then
 		blocked_pr_json=$(gh pr view "$source_pr" --repo "$repo" --json state,mergedAt,mergeCommit,baseRefName 2>/dev/null || true)
@@ -190,7 +204,7 @@ _full_loop_release_validate_existing_tag_authorization() {
 _full_loop_release_guard_existing() {
 	local repo="$1"
 	local source_pr="$2"
-	local expected_sources="${3:-$source_pr}"
+	local expected_sources="${3:-}"
 	local receipt_path=""
 	local release_status=""
 	local existing_tag_rc=0
@@ -277,6 +291,10 @@ _full_loop_release_prepare_new() {
 	local resolver="$4"
 	local expected_sources="$5"
 	local phase_started=""
+	local snapshot=""
+	local base=""
+	local base_tag=""
+	local base_object=""
 
 	phase_started=$(_full_loop_release_timing_start release-run-fetch-main)
 	if ! git -C "$REPO_ROOT" fetch origin main >/dev/null; then
@@ -284,8 +302,28 @@ _full_loop_release_prepare_new() {
 		return 1
 	fi
 	_full_loop_release_timing_finish release-run-fetch-main "$phase_started" ok
+	snapshot=$(jq -r '.snapshot_sha // ""' <<<"${_AIDEVOPS_RELEASE_LANE_JSON:-null}") || return 1
+	if [[ -z "$snapshot" ]]; then
+		snapshot=$(git -C "$REPO_ROOT" rev-parse 'origin/main^{commit}') || return 1
+		base_tag=$(git -C "$REPO_ROOT" describe --tags --match 'v[0-9]*' --abbrev=0 "$snapshot") || return 1
+		base=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${base_tag}^{commit}") || return 1
+		base_object=$(git -C "$REPO_ROOT" rev-parse "refs/tags/${base_tag}") || return 1
+	else
+		base=$(jq -er '.snapshot_base' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		base_tag=$(jq -er '.snapshot_base_tag' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		base_object=$(jq -er '.snapshot_base_object' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	fi
+	[[ "$snapshot" =~ ^[0-9a-f]{40}$ ]] || return 1
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$snapshot" origin/main || return 1
+	release_lane_pin_snapshot "$repo" "$source_pr" "$snapshot" "$base" "$base_tag" "$base_object" || return 1
+	AIDEVOPS_RELEASE_SNAPSHOT_SHA="$snapshot"
+	AIDEVOPS_RELEASE_SNAPSHOT_BASE="$base"
+	AIDEVOPS_RELEASE_SNAPSHOT_BASE_TAG="$base_tag"
+	AIDEVOPS_RELEASE_SNAPSHOT_BASE_OBJECT="$base_object"
+	export AIDEVOPS_RELEASE_SNAPSHOT_SHA AIDEVOPS_RELEASE_SNAPSHOT_BASE
+	export AIDEVOPS_RELEASE_SNAPSHOT_BASE_TAG AIDEVOPS_RELEASE_SNAPSHOT_BASE_OBJECT
 	phase_started=$(_full_loop_release_timing_start release-run-worktree-add)
-	if ! git -C "$REPO_ROOT" worktree add --detach "$release_path" origin/main >/dev/null; then
+	if ! git -C "$REPO_ROOT" worktree add --detach "$release_path" "$snapshot" >/dev/null; then
 		_full_loop_release_timing_finish release-run-worktree-add "$phase_started" failed
 		return 1
 	fi
@@ -357,6 +395,7 @@ _full_loop_release_run_new() {
 		trap - EXIT
 		cd "$release_path" || exit 1
 		AIDEVOPS_RELEASE_INTENT_TRUSTED=1 \
+			AIDEVOPS_RELEASE_SNAPSHOT_SHA="$_FULL_LOOP_RESOLVED_SOURCE_MERGE" \
 			AIDEVOPS_TRUSTED_ISSUE_PRIORITY="${AIDEVOPS_TRUSTED_ISSUE_PRIORITY:-}" \
 			AIDEVOPS_RELEASE_DEPLOY_SCOPE="$deployment_scope" \
 			bash "$version_manager" release "$release_type" --source-pr "$source_pr" \
@@ -555,7 +594,7 @@ _full_loop_release_start_new() {
 			"$persisted_expected" "$release_type" || return $?
 		expected_sources="$_FULL_LOOP_RESERVED_RECOVERY_EXPECTED"
 	fi
-	_full_loop_release_guard_existing "$repo" "$source_pr" "${expected_sources:-$source_pr}" || existing_state_rc=$?
+	_full_loop_release_guard_existing "$repo" "$source_pr" "$expected_sources" || existing_state_rc=$?
 	case "$existing_state_rc" in
 	0) return 0 ;;
 	2) ;;
@@ -571,7 +610,7 @@ _full_loop_release_start_new() {
 		return 8
 	fi
 	_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" \
-		"${expected_sources:-$source_pr}"
+		"$expected_sources"
 	return $?
 }
 

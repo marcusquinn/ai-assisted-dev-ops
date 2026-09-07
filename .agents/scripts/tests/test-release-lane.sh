@@ -113,7 +113,7 @@ run_merge_guard_test() (
 	}
 	output=$(AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 202 main feature/ordinary 2>&1) || rc=$?
-	[[ "$rc" -eq 75 && "$output" == *"source_pr=101"* && "$output" == *"phase=remote-publication"* ]] || return 1
+	[[ "$rc" -eq 0 && -z "$output" ]] || return 1
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 101 main feature/release-owner || return 1
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
@@ -128,27 +128,17 @@ run_merge_guard_test() (
 		rc=0
 		output=$(AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 			release_lane_merge_guard test/repo 202 main feature/ordinary 2>&1) || rc=$?
-		[[ "$rc" -eq 75 && "$output" == *"phase=${recovery_phase}"* ]] || return 1
+		[[ "$rc" -eq 0 && -z "$output" ]] || return 1
 		rc=0
 		AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 			release_lane_merge_guard test/repo 303 main chore/release-v1.2.3-provenance \
 			>/dev/null 2>&1 || rc=$?
-		if [[ "$recovery_phase" == "aggregate-publication-committing" ]]; then
-			[[ "$rc" -eq 0 ]] || return 1
-		else
-			[[ "$rc" -eq 75 ]] || return 1
-		fi
+		[[ "$rc" -eq 0 ]] || return 1
 		rc=0
 		AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 			release_lane_merge_guard test/repo 404 main release/aggregate-recovery \
 			>/dev/null 2>&1 || rc=$?
-		if [[ "$recovery_phase" == "aggregate-publication-committing" ||
-			"$recovery_phase" == "reserved-authorization-refresh" ||
-			"$recovery_phase" == "aggregation-successor-preparing" ]]; then
-			[[ "$rc" -eq 75 ]] || return 1
-		else
-			[[ "$rc" -eq 0 ]] || return 1
-		fi
+		[[ "$rc" -eq 0 ]] || return 1
 	done
 	state='{"schema_version":1,"repository":"test/repo","active":false,"source_pr":101,"phase":"terminal","tag":"v1.2.3","operation_token":"token-old","terminal_receipt":"superseded"}'
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
@@ -158,7 +148,7 @@ run_merge_guard_test() (
 
 run_merge_guard_api_uncertainty_test() (
 	release_lane_read() { return 1; }
-	if AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+	if ! AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 202 main feature/ordinary >/dev/null 2>&1; then
 		return 1
 	fi
@@ -634,8 +624,8 @@ if run_competing_source_test; then assert_result 'competing source receives acti
 if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
 if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
 if run_setup_guard_test; then assert_result 'exact-tag deployment blocks generic setup and permits matching owner' true; else assert_result 'exact-tag deployment blocks generic setup and permits matching owner' false; fi
-if run_merge_guard_test; then assert_result 'exact-tip lane blocks ordinary merges while preserving release ownership and terminal recovery' true; else assert_result 'exact-tip lane blocks ordinary merges while preserving release ownership and terminal recovery' false; fi
-if run_merge_guard_api_uncertainty_test; then assert_result 'merge coordination fails closed when lane state is unavailable' true; else assert_result 'merge coordination fails closed when lane state is unavailable' false; fi
+if run_merge_guard_test; then assert_result 'publisher lane never blocks ordinary merges' true; else assert_result 'publisher lane never blocks ordinary merges' false; fi
+if run_merge_guard_api_uncertainty_test; then assert_result 'unavailable publisher lane does not freeze merges' true; else assert_result 'unavailable publisher lane does not freeze merges' false; fi
 if run_http_classification_test; then assert_result 'only verified HTTP 404 is classified as an absent lane' true; else assert_result 'only verified HTTP 404 is classified as an absent lane' false; fi
 if run_legacy_and_api_failure_test; then assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' true; else assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' false; fi
 if run_default_stale_boundary_and_fencing_test; then assert_result 'default stale recovery adopts at 299s, reclaims at 300s, and fences the prior owner' true; else assert_result 'default stale recovery adopts at 299s, reclaims at 300s, and fences the prior owner' false; fi

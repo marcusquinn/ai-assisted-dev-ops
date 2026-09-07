@@ -23,6 +23,9 @@ case "$*" in
 *show\ *:VERSION*) printf '2.9.9\n' ;;
 *rev-parse\ refs/tags/v3.0.0*) printf '%040d\n' 0 ;;
 *rev-parse\ HEAD*) printf '%040d\n' 0 ;;
+*rev-parse\ origin/main*) printf '%040d\n' 0 ;;
+*describe\ --tags*) printf 'v2.9.9\n' ;;
+*rev-parse\ refs/tags/v2.9.9*) printf '%040d\n' 1 ;;
 *worktree\ add*)
 	for arg in "$@"; do
 		case "$arg" in
@@ -372,6 +375,23 @@ printf 'PASS reviewed aggregate source publishes once and truthfully supersedes 
 	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts"
 	export AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops
 	source "$SCRIPT_DIR/full-loop-release-helper.sh" help >/dev/null
+	persist_calls=0
+	_full_loop_persist_release_authorization() {
+		persist_calls=$((persist_calls + 1))
+		return 0
+	}
+	if _full_loop_capture_release_authorization marcusquinn/aidevops 48 \
+		"$ROOT/repo/linked-branch" "$ROOT/source-resolver.sh" '48,49'; then
+		printf 'FAIL substituted resolver narrowed the explicit expected set\n'
+		exit 1
+	fi
+	if _full_loop_capture_release_authorization marcusquinn/aidevops 48 \
+		"$ROOT/repo/linked-branch" "$ROOT/source-resolver.sh" '48@1111111111111111111111111111111111111111'; then
+		printf 'FAIL substituted resolver changed the explicit expected merge SHA\n'
+		exit 1
+	fi
+	[[ "$persist_calls" -eq 0 ]]
+	printf 'PASS explicit source assertions are independently checked before persistence\n'
 	persisted_sources=48@0000000000000000000000000000000000000000
 	lane_checks=0
 	expansion_calls=0

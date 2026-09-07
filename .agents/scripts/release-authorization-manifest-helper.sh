@@ -49,7 +49,8 @@ release_authorization_observed_sources_json() {
 	jq -ce --argjson expected "$expected_json" '
 		($expected | sort_by(.pr)) as $normalized_expected
 		| ([{pr:.source_pr,merge:.source_merge}] | sort_by(.pr)) as $direct_source
-		| if (($normalized_expected == $direct_source) or ((.aggregated_sources // []) | length == 0))
+		| if .mode == "snapshot" then (.aggregated_sources | sort_by(.pr))
+		  elif (($normalized_expected == $direct_source) or ((.aggregated_sources // []) | length == 0))
 			then $direct_source
 			else (.aggregated_sources | sort_by(.pr))
 		  end
