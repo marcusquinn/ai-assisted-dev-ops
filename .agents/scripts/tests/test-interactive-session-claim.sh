@@ -1326,6 +1326,76 @@ for closed_state in CLOSED closed; do
 done
 
 # =============================================================================
+# PR normalization must exercise an existing directory: missing fake worktrees
+# return before the fresh-claim regression path.
+# =============================================================================
+test_pr_normalization() (
+	local mode="$1"
+	local fixture_metadata='{"state":"OPEN","assignees":[{"login":"testuser"}],"labels":[{"name":"status:claimed"}]}'
+	local fixture_prs='[]'
+	local expected_rc=0 expected_edits=0 actual_rc=0
+	local edit_log="${TEST_ROOT}/normalize-${mode}.log"
+	: >"$edit_log"
+	case "$mode" in
+	fresh | refresh) ;;
+	closed) fixture_metadata='{"state":"CLOSED","assignees":[{"login":"testuser"}],"labels":[]}'; expected_rc=1 ;;
+	foreign) fixture_metadata='{"state":"OPEN","assignees":[{"login":"other"}],"labels":[]}'; expected_rc=1 ;;
+	denied | api-failure) expected_rc=1 ;;
+	malformed) fixture_prs='{}'; expected_rc=1 ;;
+	existing-claimed) fixture_prs='[{"number":42,"isCrossRepository":false,"closingIssuesReferences":[{"number":39}]}]'; expected_rc=1 ;;
+	existing-review | cross-repo | wrong-issue | drift)
+		fixture_metadata='{"state":"OPEN","assignees":[{"login":"testuser"}],"labels":[{"name":"status:in-review"}]}'
+		fixture_prs='[{"number":42,"isCrossRepository":false,"closingIssuesReferences":[{"number":39}]}]'
+		expected_edits=1
+		case "$mode" in
+		cross-repo) fixture_prs='[{"number":42,"isCrossRepository":true,"closingIssuesReferences":[{"number":39}]}]'; expected_rc=1; expected_edits=0 ;;
+		wrong-issue) fixture_prs='[{"number":42,"isCrossRepository":false,"closingIssuesReferences":[{"number":40}]}]'; expected_rc=1; expected_edits=0 ;;
+		drift) expected_rc=1; expected_edits=0 ;;
+		esac
+		;;
+	esac
+	_isc_validate_worktree_origin() { return 0; }
+	_isc_can_manage_issue_state() { [[ "$mode" != denied ]]; }
+	_isc_read_claim_metadata() {
+		if [[ "$mode" == drift && -f "${edit_log}.read" ]]; then
+			printf '%s\n' '{}'
+		else
+			printf '%s\n' "$fixture_metadata"
+		fi
+		: >"${edit_log}.read"
+		return 0
+	}
+	git() { printf '%s\n' 'feature/test'; return 0; }
+	gh() {
+		case "$1 $2" in
+		'pr list') [[ "$mode" != api-failure ]] || return 1; printf '%s\n' "$fixture_prs" ;;
+		'pr edit') printf '%s\n' "$*" >>"$edit_log" ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	if [[ "$mode" == refresh ]]; then
+		_isc_existing_stamp_worktree() { printf '%s\n' "$TEST_ROOT"; return 0; }
+		_isc_write_stamp() { return 0; }
+		_isc_refresh_existing_claim 39 testowner/testrepo "$TEST_ROOT" testuser 1 || actual_rc=$?
+	else
+		_isc_normalize_owned_pr 39 testowner/testrepo "$TEST_ROOT" testuser || actual_rc=$?
+	fi
+	[[ "$actual_rc" -eq "$expected_rc" ]] || return 1
+	if [[ "$expected_edits" -eq 0 ]]; then
+		[[ ! -s "$edit_log" ]] || return 1
+	else
+		[[ "$(wc -l <"$edit_log" | tr -d ' ')" == 1 ]] || return 1
+	fi
+	return 0
+)
+
+for normalization_case in fresh refresh closed foreign denied api-failure malformed existing-claimed existing-review cross-repo wrong-issue drift; do
+	test_pr_normalization "$normalization_case"
+	print_result "PR normalization: $normalization_case" "$?"
+done
+
+# =============================================================================
 # Summary
 # =============================================================================
 printf '\n'
