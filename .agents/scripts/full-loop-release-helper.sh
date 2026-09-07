@@ -589,6 +589,7 @@ _full_loop_release_start_new() {
 	local expected_sources="$5"
 	local existing_state_rc=0
 	local persisted_expected=""
+	local preparing_recovery_rc=0
 	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=false
 	_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION=false
 	_full_loop_release_guard_competing_lane "$repo" "$source_pr" || return $?
@@ -605,6 +606,15 @@ _full_loop_release_start_new() {
 	0) return 0 ;;
 	2) ;;
 	*) return "$existing_state_rc" ;;
+	esac
+	_full_loop_recovery_dead_preparing "$repo" "$source_pr" "$expected_sources" "$release_type" || preparing_recovery_rc=$?
+	case "$preparing_recovery_rc" in
+	0)
+		_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" "$expected_sources"
+		return $?
+		;;
+	2) ;;
+	*) return "$preparing_recovery_rc" ;;
 	esac
 	if [[ "$_FULL_LOOP_RESERVED_RECOVERY_COMPLETED" == "$_FULL_LOOP_RELEASE_BOOL_TRUE" ]]; then
 		_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" "$expected_sources"

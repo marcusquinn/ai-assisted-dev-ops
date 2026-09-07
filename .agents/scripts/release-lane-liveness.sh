@@ -35,6 +35,9 @@ release_lane_liveness_report() {
 			printf 'Release owner: resume with existing publication authority using aidevops release patch %s (or the originally authorized increment).\n' "$source_pr"
 			printf 'Live, recent, legacy, or foreign ownership cannot be automatically released; unknown is not an active executor.\n'
 		fi
+	elif jq -e '.active == true and .phase == "preparing" and .tag == null' <<<"$state_json" >/dev/null &&
+		[[ "$(jq -r '.state' <<<"$observation")" == "dead" ]]; then
+		printf 'Preparing owner is dead before a tag was recorded. Rerun the exact authorized release command; fenced recovery will first verify the isolated worktree, source authorization, and every publication channel.\n'
 	else
 		printf 'Inspect/resume publication: aidevops release reconcile %s\n' "$source_pr"
 	fi
