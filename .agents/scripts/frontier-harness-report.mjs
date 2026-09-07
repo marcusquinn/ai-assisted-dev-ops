@@ -80,6 +80,32 @@ export function summarize(records) {
   };
 }
 
+function valueMetrics(verifiedOutcome = null) {
+  const measured = verifiedOutcome === null ? "unmeasured" : "measured";
+  return {
+    verified_outcome: verifiedOutcome,
+    user_active_seconds: null,
+    user_interruptions: null,
+    user_corrections: null,
+    elapsed_delivery_seconds: null,
+    recurring_work_eliminated: null,
+    maintenance_seconds: null,
+    actual_paid_charges_usd: null,
+    fixed_subscription_cost_usd: null,
+    allowance_consumption: null,
+    hypothetical_api_cost_usd: null,
+    coverage: {
+      verified_outcome: measured,
+      user_attention: "unmeasured",
+      elapsed_delivery: "unmeasured",
+      recurring_work: "unmeasured",
+      maintenance: "unmeasured",
+      money: "unmeasured",
+    },
+    confidence: verifiedOutcome === null ? "unknown" : "limited",
+  };
+}
+
 function validateRunEvidence(manifest, records, telemetry) {
   if (telemetry.profile !== manifest.profile || !records.some((r) => r.type === "config.applied")
     || (manifest.profile !== "stock" && !(records[0].framework_tool_count > 0))) {
@@ -163,6 +189,7 @@ export function summarizeRun(root) {
     return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) / 1000 : null;
   };
   const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+  const verdict = runVerdict(manifest, trial, calibrationStatus(manifest, telemetry));
   return {
     profile: manifest.profile, model: manifest.model,
     framework_commit: manifest.framework_commit, opencode_version: manifest.opencode_version,
@@ -171,9 +198,10 @@ export function summarizeRun(root) {
     source_manifest_sha256: digest(join(root, "manifest.json")),
     billing: manifest.inference_route, leaderboard_comparable: false,
     experimental_context_limit: manifest.experimental_context_limit ?? null,
-    ...runVerdict(manifest, trial, calibrationStatus(manifest, telemetry)),
+    ...verdict,
     agent_seconds: duration(trial.agent_execution), setup_seconds: duration(trial.agent_setup),
     ...transportUsage(manifest),
+    value_metrics: valueMetrics(verdict.verifier_reward === null ? null : verdict.task_passed),
     telemetry,
   };
 }
