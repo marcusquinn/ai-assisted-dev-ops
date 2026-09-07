@@ -72,8 +72,8 @@ existing finalization contract.
 
 ## Executor liveness and abandoned reservations (GH#31464)
 
-An active merge fence is **not** evidence of an active release executor. Status
-and blocked merge diagnostics report `RELEASE_EXECUTOR` separately: `live`,
+An active publisher lane is **not** evidence of an active release executor. Status
+and competing-release diagnostics report `RELEASE_EXECUTOR` separately: `live`,
 `dead`, or `unknown`. A matching host digest, PID and process start time establish
 local process identity; a reused PID is not the original executor. Foreign hosts,
 legacy records, missing dependencies or permission failures remain unknown.
@@ -93,8 +93,8 @@ compare-and-swap to persist `abandoned-prepublication` and make the lane inactiv
 It does not publish, alter tags, or change the source PR's release receipt. A
 concurrent transition to preparing/adoption wins the CAS and blocks recovery.
 The publisher must enter preparing successfully before invoking publication.
-Ordinary Full-loop/Pulse merge guards and competing release starts use the same
-bounded recovery for eligible reservations; status remains read-only.
+Competing release starts use the same bounded recovery for eligible reservations;
+ordinary merge guards do not read or mutate publisher ownership. Status remains read-only.
 
 Age alone never unlocks a lane. Live/recent reservations, legacy/foreign owners,
 preparing/publication phases and aggregation recovery are not automatically

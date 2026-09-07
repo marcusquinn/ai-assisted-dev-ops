@@ -79,8 +79,10 @@ AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 refused 'caller cannot shorten five-minute
 STATE="$BASE"
 
 AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo release_lane_merge_guard test/repo 202 main feature/ordinary
+[[ "$WRITES" == 0 ]] || exit 1
+release_lane_recover_reservation test/repo 101
 [[ "$WRITES" == 1 ]] || exit 1
 jq -e '.active == false and .terminal_receipt == "abandoned-prepublication" and .reservation_recovery.observed_head != null' <<<"$STATE" >/dev/null
 release_lane_recover_reservation test/repo 101
 [[ "$WRITES" == 1 ]] || exit 1
-printf 'PASS ordinary merge recovers dead reservation once without publication\n'
+printf 'PASS ordinary merge leaves publisher state unchanged; explicit recovery remains idempotent\n'
