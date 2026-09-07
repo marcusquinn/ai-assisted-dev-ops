@@ -11,6 +11,7 @@ merged before this aggregation can publish; a listed PR is not evidence of merge
 
 | PR | Change |
 |---|---|
+| #31398 | Scope guidance to decision points while preserving DevOps execution |
 | #31416 | Bound binary review evidence to exact Git targets and preserve unusual filenames |
 | #31438 | Scope legacy task identities by verified repository and fix CLI/mapping verification |
 | #31446 | Document multisite cron readiness checks |
