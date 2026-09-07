@@ -288,7 +288,8 @@ if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FI
   {"number":11,"title":"private eligible","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:standard"}]},
   {"number":12,"title":"private assigned","updatedAt":"2000-01-01T00:00:00Z","assignees":[{"login":"worker"}],"labels":[{"name":"auto-dispatch"},{"name":"status:queued"},{"name":"tier:standard"}]},
   {"number":13,"title":"private nmr","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:thinking"},{"name":"needs-maintainer-review"}]},
-  {"number":14,"title":"private malformed","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]}
+  {"number":14,"title":"private malformed","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"}]},
+  {"number":15,"title":"private active review","updatedAt":"2000-01-01T00:00:00Z","assignees":[{"login":"owner"}],"labels":[{"name":"auto-dispatch"},{"name":"status:in-review"},{"name":"tier:standard"}]}
 ]
 JSON
   else
@@ -596,8 +597,10 @@ assert_eq "active workers do not hide eligible queue shortfall" "auto-dispatch-m
 assert_eq "queue shortfall remains a maintainer advisory" "medium" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-eligible-queue-under-target") | .severity')"
 assert_eq "queue shortfall does not auto-file a non-actionable issue" "false" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-eligible-queue-under-target") | .autofile')"
 assert_eq "shortfall fixture has one eligible issue" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.eligible_available_unassigned')"
-assert_eq "shortfall fixture distinguishes assigned work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.assigned_in_flight')"
+assert_eq "shortfall fixture distinguishes assigned work" "2" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.assigned_in_flight')"
 assert_eq "shortfall fixture distinguishes held work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.blocked_explicit_hold')"
+assert_eq "active review ownership is not an explicit hold" "2" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.blocked_labels')"
+assert_contains "shortfall evidence does not claim assignment proves liveness" "assigned_or_in_flight=2" "$SHORTFALL_OUT"
 assert_contains "NMR advisory names updatedAt inactivity basis" "issue_updatedAt_not_label_application_time" "$SHORTFALL_OUT"
 assert_eq "inactive NMR holds remain visible" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '[.findings[] | select(.id == "pulse-inactive-nmr-holds")] | length')"
 assert_eq "inactive NMR holds remain medium severity" "medium" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-inactive-nmr-holds") | .severity')"

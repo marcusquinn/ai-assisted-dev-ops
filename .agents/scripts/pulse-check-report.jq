@@ -286,7 +286,7 @@ end) as $max_workers |
           ("eligible_depth_target=" + ($threshold | tostring)),
           "dispatch_alive=true",
           ("auto_dispatch_open=" + (($queue.aggregate.auto_dispatch_open // 0) | tostring)),
-          ("assigned_in_flight=" + (($queue.aggregate.assigned_in_flight // $queue.aggregate.assigned // 0) | tostring)),
+          ("assigned_or_in_flight=" + (($queue.aggregate.assigned // $queue.aggregate.assigned_in_flight // 0) | tostring)),
           ("blocked_explicit_hold=" + (($queue.aggregate.blocked_explicit_hold // $queue.aggregate.blocked_labels // 0) | tostring)),
           ("excluded_persistent_dashboard=" + ($excluded_persistent_dashboard | tostring)),
           ("needs_maintainer_review=" + (($queue.aggregate.nmr // 0) | tostring)),

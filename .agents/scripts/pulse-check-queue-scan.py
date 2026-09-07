@@ -40,6 +40,15 @@ BLOCKING_LABELS = frozenset({
     "consolidated",
     "duplicate",
 })
+EXPLICIT_HOLD_LABELS = frozenset({
+    "needs-maintainer-review",
+    "needs-maintainer-permissions",
+    "no-auto-dispatch",
+    "infrastructure",
+    "hold-for-review",
+    "blocked",
+    "status:blocked",
+})
 PERSISTENT_DASHBOARD_LABELS = frozenset({"persistent", "quality-review"})
 
 
@@ -207,6 +216,7 @@ def _count_issue(
     labels = _issue_labels(issue)
     assigned = bool(issue.get("assignees"))
     blocked = bool(labels & BLOCKING_LABELS)
+    explicitly_held = bool(labels & EXPLICIT_HOLD_LABELS)
     dependency_inconsistent = bool(issue.get("dependency_inconsistent"))
     has_tier = any(label.startswith("tier:") for label in labels)
     has_status = any(label.startswith("status:") for label in labels)
@@ -220,7 +230,7 @@ def _count_issue(
     aggregate["needs_status"] += int(not has_status)
     aggregate["malformed_metadata"] += int(not has_tier or not has_status)
     aggregate["blocked_labels"] += int(blocked)
-    aggregate["blocked_explicit_hold"] += int(blocked)
+    aggregate["blocked_explicit_hold"] += int(explicitly_held)
     aggregate["dependency_inconsistent_available"] += int(dependency_inconsistent)
     aggregate["parent_task"] += int("parent-task" in labels)
     aggregate["nmr"] += int(is_nmr)
