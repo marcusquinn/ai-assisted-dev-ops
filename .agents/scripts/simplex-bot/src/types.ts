@@ -283,7 +283,7 @@ export interface ExecApprovalConfig {
   allowlist: string[];
   /** Commands that are always rejected (e.g., "rm -rf", "shutdown") */
   blocklist: string[];
-  /** Timeout in ms before a pending approval is auto-rejected (default: 60000) */
+  /** Timeout in ms before a pending approval is auto-rejected (default: 12 hours) */
   approvalTimeoutMs: number;
   /** Whether to require approval for commands not in allowlist or blocklist (default: true) */
   requireApprovalByDefault: boolean;
@@ -305,7 +305,7 @@ export const DEFAULT_EXEC_APPROVAL_CONFIG: ExecApprovalConfig = {
     "> /dev/",
     ":(){ :|:& };:",
   ],
-  approvalTimeoutMs: 60_000,
+  approvalTimeoutMs: 12 * 60 * 60 * 1000,
   requireApprovalByDefault: true,
 };
 
