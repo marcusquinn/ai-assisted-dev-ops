@@ -32,8 +32,8 @@ async function gitWorktreeIdentity(root) {
   };
 }
 
-async function verifyRegisteredOwnership({ root, sessionID, scriptsDir }) {
-  if (!scriptsDir) throw new Error("Image worktree ownership verification is unavailable.");
+async function verifyRegisteredOwnership({ root, sessionID, scriptsDir, subject }) {
+  if (!scriptsDir) throw new Error(`${subject} worktree ownership verification is unavailable.`);
   try {
     const { stdout } = await execFileAsync(
       join(scriptsDir, "worktree-helper.sh"),
@@ -42,42 +42,51 @@ async function verifyRegisteredOwnership({ root, sessionID, scriptsDir }) {
     );
     if (stdout.trim() !== "VERIFIED") throw new Error("unexpected verification receipt");
   } catch {
-    throw new Error("Image workdir is not owned by the current OpenCode session.");
+    throw new Error(`${subject} workdir is not owned by the current OpenCode session.`);
   }
 }
 
-export async function resolveGptImageProjectRoot(requestedWorkdir, projectRoot, context, options = {}) {
+export async function resolveSessionOwnedWorktreeRoot(requestedWorkdir, projectRoot, context, options = {}) {
+  const subject = options.subject || "Requested";
   const startupRoot = await requireProjectRoot(projectRoot);
   if (requestedWorkdir === undefined) return { root: startupRoot, linked: false };
   if (typeof requestedWorkdir !== "string" || !isAbsolute(requestedWorkdir)) {
-    throw new Error("Image workdir must be an absolute linked-worktree path.");
+    throw new Error(`${subject} workdir must be an absolute linked-worktree path.`);
   }
 
   let requestedStats;
   try {
     requestedStats = await lstat(requestedWorkdir);
   } catch {
-    throw new Error("Image workdir is unavailable or unsafe.");
+    throw new Error(`${subject} workdir is unavailable or unsafe.`);
   }
   if (!requestedStats.isDirectory() || requestedStats.isSymbolicLink()) {
-    throw new Error("Image workdir is unavailable or unsafe.");
+    throw new Error(`${subject} workdir is unavailable or unsafe.`);
   }
   const root = await requireProjectRoot(requestedWorkdir);
+  if (options.allowStartupRoot && root === startupRoot) return { root, linked: false };
   const sessionID = String(context?.sessionID || "");
   if (!/^ses_[A-Za-z0-9_-]+$/.test(sessionID)) {
-    throw new Error("Image workdir requires a current OpenCode session identity.");
+    throw new Error(`${subject} workdir requires a current OpenCode session identity.`);
   }
 
   const startupIdentity = await gitWorktreeIdentity(await gitPath(startupRoot, "--show-toplevel"));
   const requestedIdentity = await gitWorktreeIdentity(root);
   if (startupIdentity.commonDir !== requestedIdentity.commonDir) {
-    throw new Error("Image workdir belongs to an unrelated Git repository.");
+    throw new Error(`${subject} workdir belongs to an unrelated Git repository.`);
   }
   if (requestedIdentity.gitDir === requestedIdentity.commonDir) {
-    throw new Error("Image workdir must be a linked Git worktree, not a canonical checkout.");
+    throw new Error(`${subject} workdir must be a linked Git worktree, not a canonical checkout.`);
   }
 
   const verifyOwnership = options.verifyWorktreeOwnership || verifyRegisteredOwnership;
-  await verifyOwnership({ root, sessionID, scriptsDir: options.scriptsDir });
+  await verifyOwnership({ root, sessionID, scriptsDir: options.scriptsDir, subject });
   return { root, linked: true };
+}
+
+export async function resolveGptImageProjectRoot(requestedWorkdir, projectRoot, context, options = {}) {
+  return resolveSessionOwnedWorktreeRoot(requestedWorkdir, projectRoot, context, {
+    ...options,
+    subject: "Image",
+  });
 }

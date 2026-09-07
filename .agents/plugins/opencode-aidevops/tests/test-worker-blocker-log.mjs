@@ -21,6 +21,7 @@ import {
 } from "../../../scripts/worker-blocker-reconcile.mjs";
 
 const LOGGER_PATH = fileURLToPath(new URL("../../../scripts/worker-blocker-log.mjs", import.meta.url));
+const CLI_PATH = fileURLToPath(new URL("../../../scripts/worker-blocker-cli.mjs", import.meta.url));
 
 function appendInSubprocess(logPath, event) {
   return new Promise((resolve, reject) => {
@@ -270,6 +271,31 @@ test("resolve-session CLI appends a terminal event for a null-issue identity", (
   assert.equal(terminal.session_key, "routine-r005");
   assert.equal(terminal.request_id, "request-cli");
   assert.equal(terminal.blocking, false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("worker-blocker CLI runs directly and rejects unknown commands", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-worker-blocker-direct-cli-"));
+  const logPath = join(root, "events.jsonl");
+  assert.equal(appendWorkerBlockerEvent({
+    event: "permission_request_captured",
+    reason: "permission_required",
+    issue_number: 701,
+    repo_slug: "owner/repo",
+    session_key: "issue-701",
+  }, { logPath }), true);
+
+  const listed = spawnSync(process.execPath, [
+    CLI_PATH,
+    "list-active-issues",
+    "--log-file", logPath,
+    "--repo-slug", "owner/repo",
+  ], { encoding: "utf8" });
+  assert.equal(listed.status, 0);
+  assert.equal(listed.stdout.trim(), "701");
+
+  const invalid = spawnSync(process.execPath, [CLI_PATH, "unknown-command"], { encoding: "utf8" });
+  assert.equal(invalid.status, 2);
   rmSync(root, { recursive: true, force: true });
 });
 

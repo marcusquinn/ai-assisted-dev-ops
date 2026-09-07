@@ -70,7 +70,7 @@ _gh_transport_run_rest() {
 	command -v python3 >/dev/null 2>&1 || return 125
 	local temp_dir="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
 	local metadata="" error_file="" start_ms="" end_ms="" elapsed="" rc=0
-	local status="" resource="" remaining="" reset="" retry_after="" cost="" attempted="" pool="" response="" outcome=success
+	local status="" resource="" remaining="" reset="" retry_after="" cost="" attempted="" deferred_by="" pool="" response="" outcome=success
 	mkdir -p "$temp_dir" || return 75
 	metadata=$(mktemp "${temp_dir}/gh-transport-meta.XXXXXX") || return 75
 	error_file=$(mktemp "${temp_dir}/gh-transport-error.XXXXXX") || {
@@ -79,6 +79,18 @@ _gh_transport_run_rest() {
 	}
 	start_ms=$(_gh_now_ms)
 	python3 "${_GHGT_DIR}/gh-transport-governor.py" "$metadata" "$executable" "$@" 2>"$error_file" || rc=$?
+	attempted=$(jq -r '.attempted // false' "$metadata" 2>/dev/null) || attempted=false
+	deferred_by=$(jq -r '.deferred_by // ""' "$metadata" 2>/dev/null) || deferred_by=""
+	if [[ "$rc" -eq 75 && "$attempted" != true && "$deferred_by" == "local_admission" ]]; then
+		local retry_delay="${AIDEVOPS_GH_LOCAL_ADMISSION_RETRY_DELAY_SECONDS:-1}"
+		[[ "$retry_delay" =~ ^[0-5]([.][0-9]+)?$ ]] || retry_delay=1
+		command cat "$error_file" >&2
+		printf '[gh-transport] retrying one request that local admission proved was not attempted\n' >&2
+		sleep "$retry_delay"
+		: >"$error_file"
+		rc=0
+		python3 "${_GHGT_DIR}/gh-transport-governor.py" "$metadata" "$executable" "$@" 2>"$error_file" || rc=$?
+	fi
 	end_ms=$(_gh_now_ms)
 	command cat "$error_file" >&2
 	attempted=$(jq -r '.attempted // false' "$metadata" 2>/dev/null) || attempted=false

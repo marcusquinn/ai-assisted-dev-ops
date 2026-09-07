@@ -26,8 +26,18 @@ _prefetch_batch_refresh() {
 	if [[ "${PULSE_BATCH_PREFETCH_ENABLED:-1}" != "1" || ! -x "$_batch_helper" ]]; then
 		return 0
 	fi
-	local _batch_output
-	_batch_output=$("$_batch_helper" refresh 2>/dev/null) || true
+	local _batch_output="" _batch_rc=0
+	local _batch_timeout="${PULSE_BATCH_PREFETCH_TIMEOUT_SECONDS:-180}"
+	[[ "$_batch_timeout" =~ ^[1-9][0-9]*$ ]] || _batch_timeout=180
+	if declare -F run_cmd_with_timeout >/dev/null 2>&1; then
+		_batch_output=$(run_cmd_with_timeout "$_batch_timeout" "$_batch_helper" refresh 2>/dev/null) || _batch_rc=$?
+	else
+		_batch_output=$("$_batch_helper" refresh 2>/dev/null) || _batch_rc=$?
+	fi
+	if [[ "$_batch_rc" -eq 124 ]]; then
+		printf '[pulse-wrapper] prefetch_batch_refresh timed out after %ss (non-fatal)\n' \
+			"$_batch_timeout" >>"${LOGFILE:-/dev/null}" 2>/dev/null || true
+	fi
 	# Parse counters for health instrumentation (t2830: also parses tickle counters)
 	local _batch_search_calls=0 _batch_cache_writes=0
 	local _tickle_fresh=0 _tickle_stale=0

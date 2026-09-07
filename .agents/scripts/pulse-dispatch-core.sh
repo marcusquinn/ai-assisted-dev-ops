@@ -1227,11 +1227,28 @@ _dispatch_permission_history_requires_grant() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local events_json="" labeled_count="" verification=""
+	local attempts="${AIDEVOPS_PERMISSION_HISTORY_ATTEMPTS:-2}"
+	local retry_delay="${AIDEVOPS_PERMISSION_HISTORY_RETRY_DELAY:-1}"
+	local attempt=1
 	_DISPATCH_PERMISSION_VERIFY_RESULT=""
-	events_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/events?per_page=100" --paginate --slurp 2>/dev/null) || {
+	[[ "$attempts" =~ ^[1-9][0-9]*$ ]] || attempts=2
+	[[ "$attempts" -le 3 ]] || attempts=3
+	[[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=1
+	[[ "$retry_delay" -le 5 ]] || retry_delay=1
+	while [[ "$attempt" -le "$attempts" ]]; do
+		if events_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/events?per_page=100" --paginate --slurp 2>/dev/null); then
+			break
+		fi
+		events_json=""
+		if [[ "$attempt" -lt "$attempts" ]]; then
+			sleep "$retry_delay"
+		fi
+		attempt=$((attempt + 1))
+	done
+	if [[ -z "$events_json" ]]; then
 		_DISPATCH_PERMISSION_VERIFY_RESULT="API_ERROR"
 		return 0
-	}
+	fi
 	labeled_count=$(jq '[.[][]? | select(.event == "labeled" and .label.name == "needs-maintainer-permissions")] | length' <<<"$events_json" 2>/dev/null) || {
 		_DISPATCH_PERMISSION_VERIFY_RESULT="API_ERROR"
 		return 0

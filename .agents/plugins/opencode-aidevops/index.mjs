@@ -386,6 +386,7 @@ export async function AidevopsPlugin({ directory, client }) {
   // global OAuth fetch wrapper from an earlier OpenCode workspace.
   const boundedOperationManager = new BoundedInteractiveOperationManager({
     projectRoot: directory,
+    scriptsDir: SCRIPTS_DIR,
     recordOutput: createOutputSandboxRecorder(join(SCRIPTS_DIR, "output-sandbox-helper.sh")),
   });
   process.once("exit", () => boundedOperationManager.dispose());
